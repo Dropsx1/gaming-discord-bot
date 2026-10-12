@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import random
 from typing import Literal, Optional
@@ -54,6 +55,19 @@ PROMPTS = [
 ]
 
 
+# What we ask the AI for. {theme} is the user's theme (or "any game or genre").
+AI_REQUESTS = {
+    "challenge": (
+        "Give one fun, specific gameplay challenge a player could try in their next session. "
+        "Theme: {theme}. One or two sentences. Make it doable and SFW."
+    ),
+    "prompt": (
+        "Give one discussion or creative prompt for a gaming community chat channel that gets people replying. "
+        "Theme: {theme}. One or two sentences."
+    ),
+}
+
+
 class Fun(commands.Cog):
     """Suggestions, challenges and prompts."""
 
@@ -79,22 +93,29 @@ class Fun(commands.Cog):
             )
         await ctx.send(embed=embed)
 
+    async def cog_load(self):
+        # Log AI status in the background so startup isn't delayed.
+        self._ai_check = asyncio.create_task(ai.check_setup())
+
+    async def cog_unload(self):
+        await ai.close()
+
     async def _ai_or_fallback(self, ctx: commands.Context, kind: str, theme: Optional[str], fallback: list, title: str):
+        theme = trim(theme, 100) if theme else None
         text = None
-        try:
-            if ctx.interaction:
-                await ctx.defer()  # AI calls can take a few seconds
-            text = await ai.generate(kind, theme)
-        except Exception:
-            logger.exception("AI generation failed; using fallback")
-        source = "AI" if text else "built-in"
-        if not text:
+        if ai.enabled():
+            await ctx.defer()  # AI calls can take a few seconds
+            text = await ai.generate(AI_REQUESTS[kind].format(theme=theme or "any game or genre"))
+        from_ai = bool(text)
+        if not from_ai:
             text = random.choice(fallback)
             if theme:
-                text = f"**[{trim(theme, 50)}]** {text}"
+                text = f"**[{theme}]** {text}"
         embed = discord.Embed(title=title, description=trim(text, 4000), color=discord.Color.blurple())
-        if source == "built-in":
-            embed.set_footer(text="Tip: staff can plug in Grok/xAI for fresh AI ideas (see utils/ai.py)")
+        if from_ai:
+            embed.set_footer(text="✨ AI-generated")
+        elif not ai.enabled():
+            embed.set_footer(text="Tip: staff can enable Grok/xAI for fresh AI ideas")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="idea", description="Get a random game challenge")
