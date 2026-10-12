@@ -185,7 +185,7 @@ class SetupRunner:
             role = await self.guild.create_role(
                 name=spec.name, colour=spec.color, mentionable=spec.mentionable, reason=self.reason
             )  # new roles start at the bottom, i.e. below the bot's top role
-        except discord.HTTPException as e:
+        except (discord.HTTPException, discord.RateLimited) as e:
             self.report.failed.append(f"@{spec.name} ({e.__class__.__name__})")
             return None
         self.report.created.append(f"@{role.name}")
@@ -212,7 +212,7 @@ class SetupRunner:
                 overwrites=self.private_overwrites(staff) if spec.private else {},
                 reason=self.reason,
             )
-        except discord.HTTPException as e:
+        except (discord.HTTPException, discord.RateLimited) as e:
             self.report.failed.append(f"📁 {spec.name} ({e.__class__.__name__})")
             return None
         self.report.created.append(f"📁 {cat.name}")

@@ -1,6 +1,7 @@
 """Self-role menus. Edit PLATFORM_ROLES / GAME_ROLES / INTEREST_ROLES / PING_ROLES in config.py."""
 
 import logging
+import time
 from typing import Optional, Union
 
 import discord
@@ -14,20 +15,33 @@ logger = logging.getLogger("bot.roles")
 RoleRef = Union[str, int]
 
 
-async def resolve_role(guild: discord.Guild, ref: RoleRef) -> Optional[discord.Role]:
-    """Find a role by ID or exact name, creating it if allowed and missing."""
+# Discord rate-limits role creation hard (sometimes ~10+ minutes). When that happens we
+# stop trying until the limit resets, instead of failing every click. guild_id -> unix time
+_create_blocked_until: dict[int, float] = {}
+
+
+def creation_wait(guild: discord.Guild) -> int:
+    """Seconds until role creation is allowed again in this server (0 = allowed)."""
+    return max(0, int(_create_blocked_until.get(guild.id, 0) - time.time()))
+
+
+async def resolve_role(guild: discord.Guild, ref: RoleRef, create: bool = False) -> Optional[discord.Role]:
+    """Find a role by ID or exact name. Create it only when `create` is True (the member picked it)."""
     if isinstance(ref, int) or (isinstance(ref, str) and ref.isdigit()):
         return guild.get_role(int(ref))
     role = discord.utils.get(guild.roles, name=ref)
-    if role or not config.SELF_ROLES_AUTO_CREATE:
+    if role or not create or not config.SELF_ROLES_AUTO_CREATE or creation_wait(guild):
         return role
     try:
         role = await guild.create_role(name=ref, mentionable=True, reason="Self-role auto-created")
         logger.info("Auto-created self-role %r in %s", ref, guild)
         return role
+    except discord.RateLimited as e:
+        _create_blocked_until[guild.id] = time.time() + e.retry_after
+        logger.warning("Discord is rate-limiting role creation in %s for %.0fs", guild, e.retry_after)
     except discord.HTTPException as e:
         logger.warning("Could not create self-role %r: %s", ref, e)
-        return None
+    return None
 
 
 class RoleSelect(discord.ui.Select):
@@ -47,19 +61,29 @@ class RoleSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await self._apply(interaction)
+        except Exception:
+            logger.exception("Self-role menu failed for %s", interaction.user)
+            await interaction.followup.send("💥 Something went wrong updating your roles. Please try again.", ephemeral=True)
+
+    async def _apply(self, interaction: discord.Interaction):
         member = interaction.user
         guild = interaction.guild
         selected = set(self.values)
 
         to_add, to_remove, missing = [], [], []
         for option in self.options:
-            role = await resolve_role(guild, option.value)
+            picked = option.value in selected
+            # Only roles the member picked are ever created; unpicked missing roles are skipped.
+            role = await resolve_role(guild, option.value, create=picked)
             if role is None:
-                missing.append(option.label)
+                if picked:
+                    missing.append(option.label)
                 continue
-            if option.value in selected and role not in member.roles:
+            if picked and role not in member.roles:
                 to_add.append(role)
-            elif option.value not in selected and role in member.roles:
+            elif not picked and role in member.roles:
                 to_remove.append(role)
 
         try:
@@ -81,7 +105,9 @@ class RoleSelect(discord.ui.Select):
         if to_remove:
             lines.append("➖ Removed: " + ", ".join(r.mention for r in to_remove))
         if missing:
-            lines.append("⚠️ Not set up yet: " + ", ".join(missing))
+            wait = creation_wait(guild)
+            when = f" Try again in about {max(1, round(wait / 60))} min." if wait else " Please tell staff."
+            lines.append("⚠️ Couldn't set up yet: " + ", ".join(missing) + "." + when)
         if not lines:
             lines.append("No changes — you're all set.")
         logger.info("Self-roles for %s: +%s -%s", member, [r.name for r in to_add], [r.name for r in to_remove])
