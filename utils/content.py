@@ -29,6 +29,11 @@ def load_items(kind: str) -> list[dict]:
     """Load and validate a content file. Invalid entries are skipped with a warning."""
     filename, required = _FILES[kind]
     path = DATA_DIR / filename
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} is missing. If you mounted a Railway volume at /app/data it hides the bundled "
+            "content; mount the volume at /data instead."
+        )
     with path.open(encoding="utf-8") as f:
         raw = json.load(f)
     items, seen = [], set()

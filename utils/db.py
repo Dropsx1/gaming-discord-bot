@@ -15,6 +15,8 @@ from typing import Any, Iterable, Optional
 
 import aiosqlite
 
+import config
+
 log = logging.getLogger("bot.db")
 
 MIGRATIONS: list[list[str]] = [
@@ -156,6 +158,11 @@ class Database:
         await self.conn.execute("PRAGMA foreign_keys=ON")
         await self._migrate()
         log.info("Database ready at %s", os.path.abspath(self.path))
+        if config.ON_RAILWAY and not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
+            log.warning(
+                "No Railway volume attached: warnings, giveaways, events and schedules will be WIPED on every "
+                "redeploy. Add a volume mounted at /data (see README)."
+            )
 
     async def _migrate(self) -> None:
         async with self.conn.execute("PRAGMA user_version") as cur:

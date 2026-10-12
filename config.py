@@ -46,8 +46,11 @@ SYNC_COMMANDS = _bool("SYNC_COMMANDS", True)
 LOG_LEVEL = _str("LOG_LEVEL", "INFO").upper()
 
 # --- Storage ----------------------------------------------------------------
-# On Railway, mount a volume at /data and set DB_PATH=/data/bot.db
-DB_PATH = _str("DB_PATH", "./data/bot.db") or "./data/bot.db"
+# On Railway, attach a volume mounted at /data. If DB_PATH isn't set, the
+# database goes on the volume automatically (Railway sets RAILWAY_VOLUME_MOUNT_PATH).
+_VOLUME = _str("RAILWAY_VOLUME_MOUNT_PATH")
+DB_PATH = _str("DB_PATH") or (os.path.join(_VOLUME, "bot.db") if _VOLUME else "./data/bot.db")
+ON_RAILWAY = bool(_str("RAILWAY_ENVIRONMENT") or _str("RAILWAY_PROJECT_ID"))
 
 # --- Channels ---------------------------------------------------------------
 WELCOME_CHANNEL_ID = _int("WELCOME_CHANNEL_ID")
