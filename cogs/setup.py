@@ -321,6 +321,50 @@ def build_summary(guild: discord.Guild, report: Report, dry_run: bool) -> discor
     return embed
 
 
+# Roles admins can point at an existing role with /setup-role. (label, key)
+ROLE_SETTINGS = [
+    ("Member (I accept button)", "MEMBER_ROLE_ID"),
+    ("Staff", "STAFF_ROLE_ID"),
+    ("Prompt King", "PROMPT_KING_ROLE_ID"),
+    ("Remix Champion", "REMIX_CHAMPION_ROLE_ID"),
+    ("LFG pings", "LFG_ROLE_ID"),
+    ("Prompt of the Day pings", "PROMPT_PING_ROLE_ID"),
+    ("Remix Friday pings", "CHALLENGE_PING_ROLE_ID"),
+]
+SETTING_ALIASES = {
+    "member": "MEMBER_ROLE_ID", "staff": "STAFF_ROLE_ID", "prompt king": "PROMPT_KING_ROLE_ID",
+    "remix champion": "REMIX_CHAMPION_ROLE_ID", "lfg": "LFG_ROLE_ID", "prompt pings": "PROMPT_PING_ROLE_ID",
+    "challenge pings": "CHALLENGE_PING_ROLE_ID", "challenges": "CHALLENGE_PING_ROLE_ID",
+}
+# Roles the bot hands to members (by button or as a prize): must be assignable and harmless.
+GRANTED_KEYS = {"MEMBER_ROLE_ID", "PROMPT_KING_ROLE_ID", "REMIX_CHAMPION_ROLE_ID"}
+PING_KEYS = {"LFG_ROLE_ID", "PROMPT_PING_ROLE_ID", "CHALLENGE_PING_ROLE_ID"}
+# Never hand these out automatically.
+DANGEROUS_PERMS = (
+    "administrator", "manage_guild", "manage_roles", "manage_channels", "manage_webhooks", "manage_messages",
+    "manage_threads", "manage_nicknames", "manage_expressions", "manage_events", "ban_members", "kick_members",
+    "moderate_members", "mention_everyone", "view_audit_log", "move_members", "mute_members", "deafen_members",
+)
+
+
+def role_problem(guild: discord.Guild, key: str, role: discord.Role):
+    """Why this role can't be used for `key`, or None if it's fine."""
+    if role.is_default():
+        return "that's @everyone."
+    if role.managed:
+        return "it's managed by a bot or integration (like a booster or bot role)."
+    if key in GRANTED_KEYS:
+        if role >= guild.me.top_role:
+            return "it's above my highest role, so I can't give it out. Drag my role above it in Server Settings → Roles."
+        risky = [p.replace("_", " ").title() for p in DANGEROUS_PERMS if getattr(role.permissions, p, False)]
+        if risky:
+            return (
+                "I'd be handing it to anyone who qualifies, and it has moderator permissions ("
+                + ", ".join(risky[:4]) + ("…" if len(risky) > 4 else "") + "). Use a role without them."
+            )
+    return None
+
+
 class Setup(commands.Cog):
     """Automatic server setup."""
 
@@ -380,6 +424,39 @@ class Setup(commands.Cog):
         if unset:
             embed.add_field(name="Not set (optional)", value=trim(", ".join(unset), 1024), inline=False)
         await ctx.send(embed=embed, ephemeral=True)
+
+    # ------------------------------------------------------------ /setup-role
+    @commands.hybrid_command(name="setup-role", description="Use an existing role for one of the bot's roles (admin)")
+    @app_commands.describe(setting="Which bot role to set", role="The existing role to use")
+    @app_commands.choices(setting=[app_commands.Choice(name=label, value=key) for label, key in ROLE_SETTINGS])
+    @app_commands.default_permissions(administrator=True)
+    @commands.has_permissions(administrator=True)
+    async def setup_role(self, ctx: commands.Context, setting: str, role: discord.Role):
+        """Prefix usage: !setup-role MEMBER_ROLE_ID @Verified"""
+        key = SETTING_ALIASES.get(setting.strip().lower(), setting.strip().upper())
+        label = dict((k, l) for l, k in ROLE_SETTINGS).get(key)
+        if label is None:
+            options = ", ".join(f"`{k}`" for _, k in ROLE_SETTINGS)
+            await ctx.send(f"❓ Unknown setting. Use one of: {options}", ephemeral=True)
+            return
+        problem = role_problem(ctx.guild, key, role)
+        if problem:
+            await ctx.send(f"🚫 Can't use {role.mention} for **{label}**: {problem}", ephemeral=True)
+            return
+
+        await gc.set_many(ctx.guild, {key: role.id})
+        logger.info("%s set %s to %s (%s) in %s", ctx.author, key, role.name, role.id, ctx.guild)
+        msg = f"✅ **{label}** is now {role.mention}."
+        if key == "MEMBER_ROLE_ID":
+            msg += (
+                f"\nThe **I accept the rules** button now gives {role.mention}, starting with the next click. "
+                "Members who already clicked it can click again to get the role."
+                "\nThis doesn't hide any channels. To make it a gate, deny **View Channels** to @everyone "
+                f"on your main categories and allow it for {role.mention}."
+            )
+        elif key in PING_KEYS and not role.mentionable and not ctx.guild.me.guild_permissions.mention_everyone:
+            msg += f"\n⚠️ {role.mention} isn't mentionable, so pings won't notify. Turn on **Allow anyone to @mention**."
+        await ctx.send(msg, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

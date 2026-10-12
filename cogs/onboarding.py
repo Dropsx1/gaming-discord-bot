@@ -40,7 +40,7 @@ class RulesView(discord.ui.View):
         if role is None:
             logger.warning("Rules accepted by %s but MEMBER_ROLE_ID is not set or not found", member)
             await interaction.response.send_message(
-                "Thanks for accepting! (Staff: run `/setup` so this button can grant the Member role.)",
+                "Thanks for accepting! (Staff: pick the role this button gives with `/setup-role`.)",
                 ephemeral=True,
             )
             return
@@ -81,7 +81,7 @@ class Onboarding(commands.Cog):
             return
         embed = discord.Embed(title=trim(title, 256), description=trim(body, 4096), color=discord.Color.green())
         if not gc.get(ctx.guild, "MEMBER_ROLE_ID"):
-            await ctx.send("⚠️ Heads up: no Member role is configured (run `/setup`), so the button won't grant a role yet.", ephemeral=True)
+            await ctx.send("⚠️ Heads up: no Member role is set, so the button won't grant a role yet. Pick one with `/setup-role setting:Member`.", ephemeral=True)
         await ctx.channel.send(embed=embed, view=RulesView())
         if ctx.interaction:
             await ctx.send("✅ Rules panel posted.", ephemeral=True)
