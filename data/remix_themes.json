@@ -1,0 +1,262 @@
+[
+  {
+    "id": 1,
+    "title": "Retro game, modern makeover",
+    "description": "Redesign the cover, hero, or logo of a pre-2005 classic."
+  },
+  {
+    "id": 2,
+    "title": "Pixel perfect",
+    "description": "Create a character or scene in 32x32 pixel art."
+  },
+  {
+    "id": 3,
+    "title": "Fake game poster",
+    "description": "Design a poster for a game that doesn't exist."
+  },
+  {
+    "id": 4,
+    "title": "Server mascot",
+    "description": "Invent a mascot for Universal Play Haven."
+  },
+  {
+    "id": 5,
+    "title": "Album cover quest",
+    "description": "Turn your favorite game into an album cover."
+  },
+  {
+    "id": 6,
+    "title": "Minimalist movie",
+    "description": "Reduce a game's story to a minimalist poster."
+  },
+  {
+    "id": 7,
+    "title": "Neon nights",
+    "description": "Build a piece around a glowing neon palette."
+  },
+  {
+    "id": 8,
+    "title": "Cozy corner",
+    "description": "Design the comfiest room in a game world."
+  },
+  {
+    "id": 9,
+    "title": "Boss reveal",
+    "description": "Design an epic boss character with a name card."
+  },
+  {
+    "id": 10,
+    "title": "Loot drop",
+    "description": "Design a legendary item and its tooltip."
+  },
+  {
+    "id": 11,
+    "title": "Monochrome mood",
+    "description": "Create a piece using a single color plus black and white."
+  },
+  {
+    "id": 12,
+    "title": "Futuristic HUD",
+    "description": "Design a sci-fi heads-up display."
+  },
+  {
+    "id": 13,
+    "title": "Cartography club",
+    "description": "Draw a map of an imaginary game world."
+  },
+  {
+    "id": 14,
+    "title": "Robot remix",
+    "description": "Design a friendly robot companion."
+  },
+  {
+    "id": 15,
+    "title": "Fantasy food",
+    "description": "Design a dish served in a game tavern."
+  },
+  {
+    "id": 16,
+    "title": "Logo flip",
+    "description": "Redesign a fictional esports team logo."
+  },
+  {
+    "id": 17,
+    "title": "Trading card",
+    "description": "Make a collectible card for yourself as a character."
+  },
+  {
+    "id": 18,
+    "title": "Retro console concept",
+    "description": "Design a console from an alternate 1980s."
+  },
+  {
+    "id": 19,
+    "title": "Weather wizard",
+    "description": "Illustrate a game world in extreme weather."
+  },
+  {
+    "id": 20,
+    "title": "Typography only",
+    "description": "Create a piece using only letters."
+  },
+  {
+    "id": 21,
+    "title": "Tiny world",
+    "description": "Design an isometric diorama."
+  },
+  {
+    "id": 22,
+    "title": "Gotta go fast",
+    "description": "Capture motion and speed in a still image."
+  },
+  {
+    "id": 23,
+    "title": "Dream controller",
+    "description": "Design your ideal game controller."
+  },
+  {
+    "id": 24,
+    "title": "Villain era",
+    "description": "Give a classic hero a villain makeover."
+  },
+  {
+    "id": 25,
+    "title": "Season swap",
+    "description": "Reimagine a game location in a different season."
+  },
+  {
+    "id": 26,
+    "title": "Achievement unlocked",
+    "description": "Design a set of three achievement badges."
+  },
+  {
+    "id": 27,
+    "title": "Pet companion",
+    "description": "Design a pet that follows you in-game."
+  },
+  {
+    "id": 28,
+    "title": "Title screen",
+    "description": "Design a title screen for an original game."
+  },
+  {
+    "id": 29,
+    "title": "Spooky but cute",
+    "description": "Make something creepy and adorable."
+  },
+  {
+    "id": 30,
+    "title": "Cyber garden",
+    "description": "Blend nature and technology."
+  },
+  {
+    "id": 31,
+    "title": "Emoji pack",
+    "description": "Design 3 custom emojis for the server."
+  },
+  {
+    "id": 32,
+    "title": "Mech it up",
+    "description": "Design a giant mech or vehicle."
+  },
+  {
+    "id": 33,
+    "title": "Underwater level",
+    "description": "Create an ocean-themed game scene."
+  },
+  {
+    "id": 34,
+    "title": "Space station",
+    "description": "Design a room aboard a space station."
+  },
+  {
+    "id": 35,
+    "title": "Opposites attract",
+    "description": "Combine two clashing styles in one piece."
+  },
+  {
+    "id": 36,
+    "title": "Wanted poster",
+    "description": "Create a wanted poster for a game NPC."
+  },
+  {
+    "id": 37,
+    "title": "Speedpaint sprint",
+    "description": "Make something in 30 minutes or less."
+  },
+  {
+    "id": 38,
+    "title": "Desk of dreams",
+    "description": "Design your ultimate gaming setup."
+  },
+  {
+    "id": 39,
+    "title": "Lo-fi vibes",
+    "description": "Create a lo-fi study-scene illustration."
+  },
+  {
+    "id": 40,
+    "title": "Glitch art",
+    "description": "Embrace digital glitches as style."
+  },
+  {
+    "id": 41,
+    "title": "Mythic creatures",
+    "description": "Design a creature inspired by folklore."
+  },
+  {
+    "id": 42,
+    "title": "Patch notes",
+    "description": "Visualize a funny update to a game world."
+  },
+  {
+    "id": 43,
+    "title": "Arcade cabinet",
+    "description": "Design artwork for an arcade cabinet."
+  },
+  {
+    "id": 44,
+    "title": "Character select",
+    "description": "Design a lineup of 3 playable heroes."
+  },
+  {
+    "id": 45,
+    "title": "Paper craft",
+    "description": "Make art that looks cut from paper."
+  },
+  {
+    "id": 46,
+    "title": "Skyline",
+    "description": "Design a city skyline for a game world."
+  },
+  {
+    "id": 47,
+    "title": "Holiday edition",
+    "description": "Give a game character a festive skin."
+  },
+  {
+    "id": 48,
+    "title": "Retro UI",
+    "description": "Design a menu inspired by old operating systems."
+  },
+  {
+    "id": 49,
+    "title": "Sticker sheet",
+    "description": "Create a sheet of gaming-themed stickers."
+  },
+  {
+    "id": 50,
+    "title": "Silhouette challenge",
+    "description": "Tell a story using only silhouettes."
+  },
+  {
+    "id": 51,
+    "title": "Collab crossover",
+    "description": "Mash up two game universes in one image."
+  },
+  {
+    "id": 52,
+    "title": "Year in review",
+    "description": "Create a piece celebrating your favorite memory of the year."
+  }
+]

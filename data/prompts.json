@@ -1,0 +1,602 @@
+[
+  {
+    "id": 1,
+    "theme": "gaming",
+    "text": "If AI could add ONE feature to your favorite game, what would it be? 🤖🎮"
+  },
+  {
+    "id": 2,
+    "theme": "gaming",
+    "text": "Describe your dream gaming setup in 5 words 🖥️"
+  },
+  {
+    "id": 3,
+    "theme": "gaming",
+    "text": "What game would you erase from memory just to play it fresh again? 🧠"
+  },
+  {
+    "id": 4,
+    "theme": "gaming",
+    "text": "Pick a video game world to live in for a week. Where are you going? 🌍"
+  },
+  {
+    "id": 5,
+    "theme": "gaming",
+    "text": "What's the most underrated game you've ever played? 💎"
+  },
+  {
+    "id": 6,
+    "theme": "gaming",
+    "text": "Name a game soundtrack that lives rent-free in your head 🎵"
+  },
+  {
+    "id": 7,
+    "theme": "gaming",
+    "text": "Co-op or solo: which do you prefer and why? 🤝"
+  },
+  {
+    "id": 8,
+    "theme": "gaming",
+    "text": "What's your all-time favorite boss fight? ⚔️"
+  },
+  {
+    "id": 9,
+    "theme": "gaming",
+    "text": "Which game character would be the best roommate? 🏠"
+  },
+  {
+    "id": 10,
+    "theme": "gaming",
+    "text": "Describe your main character energy using only emojis 😎"
+  },
+  {
+    "id": 11,
+    "theme": "gaming",
+    "text": "What's the first game you remember playing? 🕹️"
+  },
+  {
+    "id": 12,
+    "theme": "gaming",
+    "text": "Hardest achievement you've ever unlocked? 🏆"
+  },
+  {
+    "id": 13,
+    "theme": "gaming",
+    "text": "If you could merge two games into one, which two? 🔀"
+  },
+  {
+    "id": 14,
+    "theme": "gaming",
+    "text": "What's your go-to comfort game on a rough day? ☕"
+  },
+  {
+    "id": 15,
+    "theme": "gaming",
+    "text": "Speedrun challenge: describe your favorite game's plot in one sentence ⏱️"
+  },
+  {
+    "id": 16,
+    "theme": "gaming",
+    "text": "Which NPC deserves their own spinoff game? 🎬"
+  },
+  {
+    "id": 17,
+    "theme": "gaming",
+    "text": "Controller, keyboard & mouse, or touch? Defend your choice 🎮"
+  },
+  {
+    "id": 18,
+    "theme": "gaming",
+    "text": "What's the funniest bug or glitch you've ever seen? 🐛"
+  },
+  {
+    "id": 19,
+    "theme": "gaming",
+    "text": "Pick one: open world, linear story, or roguelike? 🗺️"
+  },
+  {
+    "id": 20,
+    "theme": "gaming",
+    "text": "What game genre do you secretly want to get into? 👀"
+  },
+  {
+    "id": 21,
+    "theme": "gaming",
+    "text": "Mini-challenge: invent a power-up and tell us what it does ⚡"
+  },
+  {
+    "id": 22,
+    "theme": "gaming",
+    "text": "Which game has the best opening 10 minutes? 🚀"
+  },
+  {
+    "id": 23,
+    "theme": "gaming",
+    "text": "What's your favorite in-game pet or companion? 🐾"
+  },
+  {
+    "id": 24,
+    "theme": "gaming",
+    "text": "If your life had a loading screen tip, what would it say? 💡"
+  },
+  {
+    "id": 25,
+    "theme": "gaming",
+    "text": "Which retro game deserves a modern remake? 🔁"
+  },
+  {
+    "id": 26,
+    "theme": "gaming",
+    "text": "What's a gaming hot take you'll defend forever? 🔥"
+  },
+  {
+    "id": 27,
+    "theme": "gaming",
+    "text": "Name a game that made you feel something unexpected 🥹"
+  },
+  {
+    "id": 28,
+    "theme": "gaming",
+    "text": "Mini-challenge: rename your favorite game badly 😂"
+  },
+  {
+    "id": 29,
+    "theme": "gaming",
+    "text": "What's your favorite multiplayer memory with friends? 👾"
+  },
+  {
+    "id": 30,
+    "theme": "gaming",
+    "text": "Which game has the coziest vibes? 🌿"
+  },
+  {
+    "id": 31,
+    "theme": "ai",
+    "text": "If you had a personal AI sidekick, what would you name it? 🤖"
+  },
+  {
+    "id": 32,
+    "theme": "ai",
+    "text": "What's one boring chore you'd happily hand to an AI? 🧹"
+  },
+  {
+    "id": 33,
+    "theme": "ai",
+    "text": "Describe the perfect AI game master in 3 words 🎲"
+  },
+  {
+    "id": 34,
+    "theme": "ai",
+    "text": "Would you rather have an AI that writes your emails or plans your meals? 📧🍝"
+  },
+  {
+    "id": 35,
+    "theme": "ai",
+    "text": "Mini-challenge: write a 1-line prompt for an AI to make you laugh 😂"
+  },
+  {
+    "id": 36,
+    "theme": "ai",
+    "text": "What's the most creative thing you've made with an AI tool? 🎨"
+  },
+  {
+    "id": 37,
+    "theme": "ai",
+    "text": "If AI NPCs could remember you, which game should try it first? 🧠"
+  },
+  {
+    "id": 38,
+    "theme": "ai",
+    "text": "What should AI never be allowed to do in games? 🚫"
+  },
+  {
+    "id": 39,
+    "theme": "ai",
+    "text": "Pick a movie robot or AI to hang out with for a day 🎬"
+  },
+  {
+    "id": 40,
+    "theme": "ai",
+    "text": "How would you explain AI to your grandparents in one sentence? 👵"
+  },
+  {
+    "id": 41,
+    "theme": "ai",
+    "text": "What's a skill you'd want an AI tutor to teach you? 📚"
+  },
+  {
+    "id": 42,
+    "theme": "ai",
+    "text": "Mini-challenge: describe your day as if you were a chatbot 💬"
+  },
+  {
+    "id": 43,
+    "theme": "ai",
+    "text": "Would you trust an AI to pick your next game? Why or why not? 🎮"
+  },
+  {
+    "id": 44,
+    "theme": "ai",
+    "text": "What's your favorite way to use AI for creativity? ✨"
+  },
+  {
+    "id": 45,
+    "theme": "ai",
+    "text": "If an AI could design a new game genre, what might it invent? 🧪"
+  },
+  {
+    "id": 46,
+    "theme": "ai",
+    "text": "AI-generated soundtrack for your life: what genre is it? 🎧"
+  },
+  {
+    "id": 47,
+    "theme": "ai",
+    "text": "What's one question you'd love to ask a super-smart AI? ❓"
+  },
+  {
+    "id": 48,
+    "theme": "ai",
+    "text": "Mini-challenge: give an AI a ridiculous job title 🏷️"
+  },
+  {
+    "id": 49,
+    "theme": "ai",
+    "text": "Should AI companions in games have their own opinions? 🤔"
+  },
+  {
+    "id": 50,
+    "theme": "ai",
+    "text": "What's the funniest AI fail you've seen? 🤖💥"
+  },
+  {
+    "id": 51,
+    "theme": "ai",
+    "text": "Describe your ideal AI assistant's personality in 3 words 😄"
+  },
+  {
+    "id": 52,
+    "theme": "ai",
+    "text": "If AI could level up one real-life skill instantly, which one? 📈"
+  },
+  {
+    "id": 53,
+    "theme": "ai",
+    "text": "What's a tiny everyday problem AI could solve beautifully? 🔧"
+  },
+  {
+    "id": 54,
+    "theme": "ai",
+    "text": "Mini-challenge: write a haiku about a robot learning to game 🍃"
+  },
+  {
+    "id": 55,
+    "theme": "ai",
+    "text": "Would you play a game where every NPC is AI-driven? 👥"
+  },
+  {
+    "id": 56,
+    "theme": "ai",
+    "text": "What's a sci-fi AI idea you hope never becomes real? 😬"
+  },
+  {
+    "id": 57,
+    "theme": "ai",
+    "text": "What's a sci-fi AI idea you hope DOES become real? 🌟"
+  },
+  {
+    "id": 58,
+    "theme": "ai",
+    "text": "If your pet had an AI translator, what would it say first? 🐶"
+  },
+  {
+    "id": 59,
+    "theme": "ai",
+    "text": "How do you double-check stuff an AI tells you? 🔍"
+  },
+  {
+    "id": 60,
+    "theme": "ai",
+    "text": "Rate your AI-prompting skills from 1 to 10 and explain 🎯"
+  },
+  {
+    "id": 61,
+    "theme": "tech",
+    "text": "What's the one gadget you can't live without? 📱"
+  },
+  {
+    "id": 62,
+    "theme": "tech",
+    "text": "Show-and-tell: describe your desk setup in one sentence 🖥️"
+  },
+  {
+    "id": 63,
+    "theme": "tech",
+    "text": "Mechanical or membrane keyboard? Which switches? ⌨️"
+  },
+  {
+    "id": 64,
+    "theme": "tech",
+    "text": "What's your favorite tech-related life hack? 💡"
+  },
+  {
+    "id": 65,
+    "theme": "tech",
+    "text": "Light mode or dark mode? Choose wisely 🌗"
+  },
+  {
+    "id": 66,
+    "theme": "tech",
+    "text": "What was your very first computer or phone? 📟"
+  },
+  {
+    "id": 67,
+    "theme": "tech",
+    "text": "Mini-challenge: describe your browser tabs right now in 3 words 🗂️"
+  },
+  {
+    "id": 68,
+    "theme": "tech",
+    "text": "What piece of tech do you wish still existed? 🕰️"
+  },
+  {
+    "id": 69,
+    "theme": "tech",
+    "text": "How many monitors is too many monitors? 🖥️🖥️🖥️"
+  },
+  {
+    "id": 70,
+    "theme": "tech",
+    "text": "What's your favorite app that nobody talks about? 🔍"
+  },
+  {
+    "id": 71,
+    "theme": "tech",
+    "text": "Cable management: masterpiece or chaos? 🔌"
+  },
+  {
+    "id": 72,
+    "theme": "tech",
+    "text": "If you could build any gadget, what would it do? 🛠️"
+  },
+  {
+    "id": 73,
+    "theme": "tech",
+    "text": "What's the best tech purchase you've ever made? 💸"
+  },
+  {
+    "id": 74,
+    "theme": "tech",
+    "text": "What's your favorite keyboard shortcut? ⌨️✨"
+  },
+  {
+    "id": 75,
+    "theme": "tech",
+    "text": "Mini-challenge: explain Wi-Fi like you're a pirate 🏴‍☠️"
+  },
+  {
+    "id": 76,
+    "theme": "tech",
+    "text": "Headphones or speakers for gaming? 🎧"
+  },
+  {
+    "id": 77,
+    "theme": "tech",
+    "text": "Which sci-fi gadget do you wish was real? 🚀"
+  },
+  {
+    "id": 78,
+    "theme": "tech",
+    "text": "What's your go-to fix when tech breaks? Turn it off and on? 🔄"
+  },
+  {
+    "id": 79,
+    "theme": "tech",
+    "text": "Laptop or desktop: what's your daily driver? 💻"
+  },
+  {
+    "id": 80,
+    "theme": "tech",
+    "text": "What's a tech skill you're learning right now? 📚"
+  },
+  {
+    "id": 81,
+    "theme": "tech",
+    "text": "Mini-challenge: name your PC like it's a starship 🛸"
+  },
+  {
+    "id": 82,
+    "theme": "tech",
+    "text": "RGB lighting: more is more, or less is more? 🌈"
+  },
+  {
+    "id": 83,
+    "theme": "tech",
+    "text": "What coding language would you be as a person? 👩‍💻"
+  },
+  {
+    "id": 84,
+    "theme": "tech",
+    "text": "Best tech sound effect of all time? 🔊"
+  },
+  {
+    "id": 85,
+    "theme": "tech",
+    "text": "What's your phone's home screen vibe? 📲"
+  },
+  {
+    "id": 86,
+    "theme": "tech",
+    "text": "If your computer had a personality, what would it be? 🤖"
+  },
+  {
+    "id": 87,
+    "theme": "tech",
+    "text": "What's the oldest tech you still use? 🦖"
+  },
+  {
+    "id": 88,
+    "theme": "tech",
+    "text": "Smart home: genius or too much? 🏡"
+  },
+  {
+    "id": 89,
+    "theme": "tech",
+    "text": "What tiny tech annoyance drives you up the wall? 😤"
+  },
+  {
+    "id": 90,
+    "theme": "tech",
+    "text": "Mini-challenge: describe the internet to a medieval knight 🛡️"
+  },
+  {
+    "id": 91,
+    "theme": "design",
+    "text": "What color palette matches your mood today? 🎨"
+  },
+  {
+    "id": 92,
+    "theme": "design",
+    "text": "Describe your dream game logo in 5 words ✏️"
+  },
+  {
+    "id": 93,
+    "theme": "design",
+    "text": "Favorite font, and why? 🔤"
+  },
+  {
+    "id": 94,
+    "theme": "design",
+    "text": "Mini-challenge: sketch your avatar in 60 seconds and share ⏱️"
+  },
+  {
+    "id": 95,
+    "theme": "design",
+    "text": "Which game has the best UI you've ever seen? 🧩"
+  },
+  {
+    "id": 96,
+    "theme": "design",
+    "text": "Pixel art or high-res? Pick a side 👾"
+  },
+  {
+    "id": 97,
+    "theme": "design",
+    "text": "What's a design that makes you instantly happy? 😊"
+  },
+  {
+    "id": 98,
+    "theme": "design",
+    "text": "Minimalist or maximalist? 🎭"
+  },
+  {
+    "id": 99,
+    "theme": "design",
+    "text": "Mini-challenge: redesign a traffic sign for a fantasy world 🐉"
+  },
+  {
+    "id": 100,
+    "theme": "design",
+    "text": "What's your favorite game box art of all time? 📦"
+  },
+  {
+    "id": 101,
+    "theme": "design",
+    "text": "Which game world has the best art direction? 🌄"
+  },
+  {
+    "id": 102,
+    "theme": "design",
+    "text": "Describe your art style in 3 words 🖌️"
+  },
+  {
+    "id": 103,
+    "theme": "design",
+    "text": "What's your go-to design tool? 🛠️"
+  },
+  {
+    "id": 104,
+    "theme": "design",
+    "text": "Mini-challenge: create a 3-color palette named after a snack 🍩"
+  },
+  {
+    "id": 105,
+    "theme": "design",
+    "text": "Best game menu screen ever? 📋"
+  },
+  {
+    "id": 106,
+    "theme": "design",
+    "text": "What design trend do you wish would come back? 🔁"
+  },
+  {
+    "id": 107,
+    "theme": "design",
+    "text": "What design trend should retire forever? 👋"
+  },
+  {
+    "id": 108,
+    "theme": "design",
+    "text": "Sketchbook or tablet? ✍️"
+  },
+  {
+    "id": 109,
+    "theme": "design",
+    "text": "Mini-challenge: design a badge for this server 🏅"
+  },
+  {
+    "id": 110,
+    "theme": "design",
+    "text": "Which video game character has the best outfit design? 👗"
+  },
+  {
+    "id": 111,
+    "theme": "design",
+    "text": "What's your favorite icon set or style? 🔷"
+  },
+  {
+    "id": 112,
+    "theme": "design",
+    "text": "Mini-challenge: describe a logo using only emojis 🧠"
+  },
+  {
+    "id": 113,
+    "theme": "design",
+    "text": "Where do you find design inspiration? 💭"
+  },
+  {
+    "id": 114,
+    "theme": "design",
+    "text": "What's a tiny design detail you always notice? 🔍"
+  },
+  {
+    "id": 115,
+    "theme": "design",
+    "text": "Neon, pastel, or earthy tones? 🌈"
+  },
+  {
+    "id": 116,
+    "theme": "design",
+    "text": "Mini-challenge: invent a game title and describe its poster 🎬"
+  },
+  {
+    "id": 117,
+    "theme": "design",
+    "text": "Which game HUD is the cleanest? 🎯"
+  },
+  {
+    "id": 118,
+    "theme": "design",
+    "text": "What's the best-designed controller of all time? 🎮"
+  },
+  {
+    "id": 119,
+    "theme": "design",
+    "text": "Show us your workspace's best design feature 🪴"
+  },
+  {
+    "id": 120,
+    "theme": "design",
+    "text": "If this server were a color, which one? 🌀"
+  }
+]

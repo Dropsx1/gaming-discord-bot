@@ -25,6 +25,7 @@ COGS = [
     "cogs.fun",
     "cogs.voice",
     "cogs.tickets",
+    "cogs.schedule",
 ]
 
 intents = discord.Intents.default()

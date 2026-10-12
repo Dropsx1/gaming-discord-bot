@@ -7,6 +7,7 @@ games, regions -- are meant to be edited directly.
 
 import logging
 import os
+from datetime import time
 
 from dotenv import load_dotenv
 
@@ -72,6 +73,26 @@ JOIN_TO_CREATE_CHANNEL_ID = _int("JOIN_TO_CREATE_CHANNEL_ID")
 VOICE_CATEGORY_ID = _int("VOICE_CATEGORY_ID")  # falls back to the Join-to-Create channel's category
 VC_NAME_TEMPLATE = _str("VC_NAME_TEMPLATE", "🎮 {user}'s Room")  # {user} = display name
 VC_DEFAULT_LIMIT = _int("VC_DEFAULT_LIMIT", 0)  # 0 = unlimited
+
+# --- Scheduled content --------------------------------------------------------
+SCHEDULE_ENABLED = _bool("SCHEDULE_ENABLED", True)
+TIMEZONE = _str("TIMEZONE", "America/New_York") or "America/New_York"
+PROMPT_CHANNEL_ID = _int("PROMPT_CHANNEL_ID")        # text or forum channel
+PROMPT_PING_ROLE_ID = _int("PROMPT_PING_ROLE_ID")
+PROMPT_KING_ROLE_ID = _int("PROMPT_KING_ROLE_ID")    # given for 24h to the top reply
+DIGEST_CHANNEL_ID = _int("DIGEST_CHANNEL_ID")
+CHALLENGE_CHANNEL_ID = _int("CHALLENGE_CHANNEL_ID")  # text or forum channel
+CHALLENGE_PING_ROLE_ID = _int("CHALLENGE_PING_ROLE_ID")
+REMIX_CHAMPION_ROLE_ID = _int("REMIX_CHAMPION_ROLE_ID")  # given for 7 days to the winner
+
+# Schedule (local time in TIMEZONE). Edit here to move a job.
+PROMPT_KING_TIME = time(18, 5)     # daily: crown yesterday's top reply
+PROMPT_TIME = time(18, 7)          # daily: post Prompt of the Day
+DIGEST_TIME = time(10, 13)         # Mondays: weekly digest
+REMIX_KICKOFF_TIME = time(16, 11)  # Fridays: Remix Friday kickoff
+REMIX_REMINDER_TIME = time(17, 9)  # Sundays: "voting closes soon" reminder
+REMIX_CLOSE_TIME = time(18, 0)     # Sundays: voting deadline + winner
+DIGEST_HEADLINES_PER_FEED = 3      # newest N per feed (drops to 2 if a section is too long)
 
 # --- Self-roles ---------------------------------------------------------------
 # Auto-create a self-role if it doesn't exist yet (needs Manage Roles).

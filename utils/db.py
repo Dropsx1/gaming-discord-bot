@@ -67,6 +67,38 @@ MIGRATIONS: list[list[str]] = [
         )""",
         "CREATE INDEX idx_temp_roles_due ON temp_roles (remove_at)",
     ],
+    # v2: scheduled content (Prompt of the Day, Remix Friday, digest)
+    [
+        "ALTER TABLE prompt_log ADD COLUMN guild_id INTEGER",
+        "ALTER TABLE prompt_log ADD COLUMN item_id INTEGER",
+        "ALTER TABLE prompt_log ADD COLUMN theme TEXT",
+        "ALTER TABLE prompt_log ADD COLUMN judged INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE challenges ADD COLUMN item_id INTEGER",
+        "ALTER TABLE challenges ADD COLUMN reminded INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE challenges ADD COLUMN closed INTEGER NOT NULL DEFAULT 0",
+        # Rotation of built-in content: one row per used item, cleared when all are used.
+        """CREATE TABLE content_usage (
+            kind TEXT NOT NULL,
+            item_id INTEGER NOT NULL,
+            used_at INTEGER NOT NULL,
+            PRIMARY KEY (kind, item_id)
+        )""",
+        # Makes scheduled jobs idempotent (e.g. one prompt per day, even after a restart).
+        """CREATE TABLE job_runs (
+            job TEXT NOT NULL,
+            run_key TEXT NOT NULL,
+            ran_at INTEGER NOT NULL,
+            PRIMARY KEY (job, run_key)
+        )""",
+        # Message counts per channel per day, for the digest's "most active channel".
+        """CREATE TABLE channel_activity (
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            day TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, channel_id, day)
+        )""",
+    ],
 ]
 
 
@@ -155,3 +187,31 @@ class Database:
         await self.execute(
             "DELETE FROM temp_roles WHERE guild_id = ? AND user_id = ? AND role_id = ?", (guild_id, user_id, role_id)
         )
+
+    # ---------------------------------------------------------- job runs
+    async def job_ran(self, job: str, run_key: str) -> bool:
+        return await self.fetchone("SELECT 1 FROM job_runs WHERE job = ? AND run_key = ?", (job, run_key)) is not None
+
+    async def mark_job(self, job: str, run_key: str) -> None:
+        await self.execute(
+            "INSERT OR REPLACE INTO job_runs (job, run_key, ran_at) VALUES (?, ?, ?)", (job, run_key, now())
+        )
+
+    # ----------------------------------------------------- content usage
+    async def used_ids(self, kind: str) -> set[int]:
+        rows = await self.fetchall("SELECT item_id FROM content_usage WHERE kind = ?", (kind,))
+        return {r[0] for r in rows}
+
+    async def last_used_id(self, kind: str) -> Optional[int]:
+        row = await self.fetchone(
+            "SELECT item_id FROM content_usage WHERE kind = ? ORDER BY used_at DESC, rowid DESC LIMIT 1", (kind,)
+        )
+        return row[0] if row else None
+
+    async def mark_used(self, kind: str, item_id: int) -> None:
+        await self.execute(
+            "INSERT OR REPLACE INTO content_usage (kind, item_id, used_at) VALUES (?, ?, ?)", (kind, item_id, now())
+        )
+
+    async def reset_usage(self, kind: str) -> None:
+        await self.execute("DELETE FROM content_usage WHERE kind = ?", (kind,))
