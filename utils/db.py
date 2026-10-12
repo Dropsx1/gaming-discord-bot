@@ -99,6 +99,19 @@ MIGRATIONS: list[list[str]] = [
             PRIMARY KEY (guild_id, channel_id, day)
         )""",
     ],
+    # v3: giveaways
+    [
+        "ALTER TABLE giveaways ADD COLUMN host_id INTEGER",
+        "ALTER TABLE giveaways ADD COLUMN required_role_id INTEGER",
+        "ALTER TABLE giveaways ADD COLUMN winner_ids TEXT NOT NULL DEFAULT ''",  # comma-separated, all draws
+        "ALTER TABLE giveaways ADD COLUMN created_at INTEGER",
+        """CREATE TABLE giveaway_entries (
+            message_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            entered_at INTEGER NOT NULL,
+            PRIMARY KEY (message_id, user_id)
+        )""",
+    ],
 ]
 
 
@@ -147,6 +160,12 @@ class Database:
         cur = await self.conn.execute(sql, tuple(params))
         await self.conn.commit()
         return cur.lastrowid
+
+    async def execute_count(self, sql: str, params: Iterable[Any] = ()) -> int:
+        """Run a write statement and commit. Returns the number of rows changed."""
+        cur = await self.conn.execute(sql, tuple(params))
+        await self.conn.commit()
+        return cur.rowcount
 
     async def fetchone(self, sql: str, params: Iterable[Any] = ()) -> Optional[aiosqlite.Row]:
         async with self.conn.execute(sql, tuple(params)) as cur:

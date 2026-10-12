@@ -1,6 +1,8 @@
 """Shared helpers: staff checks, log-channel posting, text trimming."""
 
 import logging
+import re
+from datetime import timedelta
 from typing import Optional
 
 import discord
@@ -74,3 +76,31 @@ def autocomplete_from(values: list[str]):
         return [discord.app_commands.Choice(name=v, value=v) for v in matches[:25]]
 
     return _autocomplete
+
+
+_DURATION_RE = re.compile(r"(\d+)\s*([smhdw]?)", re.IGNORECASE)
+_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks", "": "minutes"}
+
+
+def parse_duration(text: str) -> Optional[timedelta]:
+    """'30' -> 30 min, '10m', '2h', '1d', '1h30m'. Returns None if invalid."""
+    text = text.strip().lower().replace(" ", "")
+    if not text or _DURATION_RE.sub("", text):
+        return None
+    total = timedelta()
+    try:
+        for amount, unit in _DURATION_RE.findall(text):
+            total += timedelta(**{_UNITS[unit]: int(amount)})
+    except OverflowError:
+        return None
+    return total if total.total_seconds() > 0 else None
+
+
+def human(td: timedelta) -> str:
+    secs = int(td.total_seconds())
+    parts = []
+    for name, size in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+        if secs >= size:
+            parts.append(f"{secs // size}{name}")
+            secs %= size
+    return " ".join(parts) or "0s"
