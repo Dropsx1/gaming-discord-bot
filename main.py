@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from utils.db import Database
 
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL, logging.INFO),
@@ -46,9 +47,11 @@ class GamingBot(commands.Bot):
             # Raise instead of silently waiting minutes on a rate limit (e.g. channel renames).
             max_ratelimit_timeout=30.0,
         )
+        self.db = Database(config.DB_PATH)
 
     async def setup_hook(self):
         self.add_check(self._guild_only)
+        await self.db.connect()  # before cogs, so they can use self.bot.db
 
         for cog in COGS:
             try:
@@ -71,6 +74,10 @@ class GamingBot(commands.Bot):
                 logger.info("Synced %d global slash commands (can take up to an hour to appear)", len(synced))
         except discord.HTTPException:
             logger.exception("Slash command sync failed")
+
+    async def close(self):
+        await super().close()
+        await self.db.close()
 
     @staticmethod
     async def _guild_only(ctx: commands.Context) -> bool:

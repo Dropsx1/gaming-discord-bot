@@ -7,3 +7,7 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+data/
+*.db
+*.db-wal
+*.db-shm

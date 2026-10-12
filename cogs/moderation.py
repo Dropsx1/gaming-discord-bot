@@ -83,12 +83,42 @@ class Moderation(commands.Cog):
         if member == ctx.author or member.bot:
             await ctx.send("You can't warn that member.", ephemeral=True)
             return
-        dm_ok = await self.dm(member, f"⚠️ You received a warning in **{ctx.guild.name}**.\n**Reason:** {reason}")
+        warn_id = await self.bot.db.add_warn(ctx.guild.id, member.id, ctx.author.id, reason)
+        total = await self.bot.db.count_warns(ctx.guild.id, member.id)
+
+        dm_ok = await self.dm(
+            member,
+            f"⚠️ You received a warning in **{ctx.guild.name}** (warning #{total}).\n**Reason:** {reason}",
+        )
         embed = self.mod_embed("⚠️ Warning Issued", discord.Color.orange(), ctx, member, reason)
-        embed.set_footer(text="DM delivered" if dm_ok else "DM failed (closed DMs)")
+        embed.add_field(name="Total warnings", value=str(total), inline=True)
+        embed.set_footer(text=f"Warn ID {warn_id} • " + ("DM delivered" if dm_ok else "DM failed (closed DMs)"))
         await send_log(ctx.guild, config.MOD_LOG_CHANNEL_ID, embed)
-        logger.info("%s warned %s: %s", ctx.author, member, reason)
-        await ctx.send(f"⚠️ {member.mention} has been warned.", ephemeral=True)
+        logger.info("%s warned %s (#%d, id %d): %s", ctx.author, member, total, warn_id, reason)
+        await ctx.send(f"⚠️ {member.mention} has been warned. They now have **{total}** warning(s).", ephemeral=True)
+
+    @commands.hybrid_command(name="warnings", description="List a member's warnings")
+    @app_commands.describe(member="Member to look up")
+    @app_commands.default_permissions(moderate_members=True)
+    @commands.has_permissions(moderate_members=True)
+    async def warnings(self, ctx: commands.Context, member: discord.User):
+        rows = await self.bot.db.get_warns(ctx.guild.id, member.id)
+        embed = discord.Embed(
+            title=f"📋 Warnings for {member}",
+            color=discord.Color.orange() if rows else discord.Color.green(),
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        if not rows:
+            embed.description = "No warnings on record. ✨"
+        else:
+            embed.description = f"**{len(rows)}** warning(s) total" + (", showing the latest 10." if len(rows) > 10 else ".")
+            for row in rows[:10]:
+                embed.add_field(
+                    name=f"Warn #{row['id']}",
+                    value=trim(f"{row['reason']}\nby <@{row['mod_id']}> • <t:{row['created_at']}:R>", 1024),
+                    inline=False,
+                )
+        await ctx.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(name="timeout", description="Timeout (mute) a member")
     @app_commands.describe(member="Member to timeout", duration="e.g. 30 (minutes), 10m, 2h, 1d", reason="Reason")

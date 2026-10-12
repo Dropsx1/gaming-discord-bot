@@ -44,6 +44,10 @@ GUILD_ID = _int("GUILD_ID")  # set for instant slash-command sync to one server
 SYNC_COMMANDS = _bool("SYNC_COMMANDS", True)
 LOG_LEVEL = _str("LOG_LEVEL", "INFO").upper()
 
+# --- Storage ----------------------------------------------------------------
+# On Railway, mount a volume at /data and set DB_PATH=/data/bot.db
+DB_PATH = _str("DB_PATH", "./data/bot.db") or "./data/bot.db"
+
 # --- Channels ---------------------------------------------------------------
 WELCOME_CHANNEL_ID = _int("WELCOME_CHANNEL_ID")
 START_HERE_CHANNEL_ID = _int("START_HERE_CHANNEL_ID")
