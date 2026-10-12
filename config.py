@@ -61,7 +61,9 @@ TICKET_LOG_CHANNEL_ID = _int("TICKET_LOG_CHANNEL_ID") or LOG_CHANNEL_ID
 # --- Roles ------------------------------------------------------------------
 STAFF_ROLE_ID = _int("STAFF_ROLE_ID")
 LFG_ROLE_ID = _int("LFG_ROLE_ID")
-MEMBER_ROLE_ID = _int("MEMBER_ROLE_ID")  # optional auto-role on join
+MEMBER_ROLE_ID = _int("MEMBER_ROLE_ID")  # granted by the rules "I accept" button (/rulespanel)
+# Also give MEMBER_ROLE_ID automatically on join? Leave off when using the rules button as a gate.
+MEMBER_ROLE_ON_JOIN = _bool("MEMBER_ROLE_ON_JOIN", False)
 
 # --- Tickets ----------------------------------------------------------------
 TICKET_CATEGORY_ID = _int("TICKET_CATEGORY_ID")
@@ -73,6 +75,9 @@ JOIN_TO_CREATE_CHANNEL_ID = _int("JOIN_TO_CREATE_CHANNEL_ID")
 VOICE_CATEGORY_ID = _int("VOICE_CATEGORY_ID")  # falls back to the Join-to-Create channel's category
 VC_NAME_TEMPLATE = _str("VC_NAME_TEMPLATE", "🎮 {user}'s Room")  # {user} = display name
 VC_DEFAULT_LIMIT = _int("VC_DEFAULT_LIMIT", 0)  # 0 = unlimited
+
+# --- Events -------------------------------------------------------------------
+EVENT_REMINDER_MINUTES = _int("EVENT_REMINDER_MINUTES", 30)  # ping "Going" users this long before start
 
 # --- Scheduled content --------------------------------------------------------
 SCHEDULE_ENABLED = _bool("SCHEDULE_ENABLED", True)
@@ -122,6 +127,23 @@ GAME_ROLES = [
     ("Overwatch 2", "Overwatch", None),
     ("Counter-Strike 2", "CS2", None),
 ]
+
+INTEREST_ROLES = [
+    ("Creator", "Creator", "🎬"),
+    ("AI Enthusiast", "AI Enthusiast", "🤖"),
+    ("Tech Head", "Tech Head", "💻"),
+    ("Game Dev", "Game Dev", "🛠️"),
+]
+
+# Opt-in notification roles. The scheduler uses the first three by name when
+# PROMPT_PING_ROLE_ID / CHALLENGE_PING_ROLE_ID aren't set.
+PING_ROLES = [
+    ("Events", "Events", "📅"),
+    ("Challenges", "Challenges", "🎨"),
+    ("Game Nights", "Game Nights", "🌙"),
+    ("Prompt pings", "Prompt pings", "💬"),
+]
+PING_ROLE_NAMES = {"prompt": "Prompt pings", "challenge": "Challenges"}
 
 # Autocomplete suggestions for /lfg (users can still type anything).
 LFG_GAMES = [label for label, _, _ in GAME_ROLES] + [

@@ -76,10 +76,13 @@ def is_entry(msg: discord.Message) -> bool:
     return not msg.author.bot and bool(msg.attachments or msg.embeds or URL_RE.search(msg.content or ""))
 
 
-def role_ping(guild: discord.Guild, role_id: int, enabled: bool) -> Optional[str]:
-    if not (enabled and role_id):
+def role_ping(guild: discord.Guild, role_id: int, enabled: bool, fallback_name: Optional[str] = None) -> Optional[str]:
+    """Mention for the ping role: the configured ID, else the self-role with `fallback_name`."""
+    if not enabled:
         return None
-    role = guild.get_role(role_id)
+    role = guild.get_role(role_id) if role_id else None
+    if role is None and fallback_name:
+        role = discord.utils.get(guild.roles, name=fallback_name)
     return role.mention if role and not role.is_default() else None
 
 
@@ -191,7 +194,7 @@ class Schedule(commands.Cog):
             embed.set_footer(text=f"{item['theme'].title()} • {day}")
             message, thread = await self.publish(
                 channel, thread_name=f"Prompt of the Day – {day}",
-                content=role_ping(channel.guild, config.PROMPT_PING_ROLE_ID, ping), embed=embed,
+                content=role_ping(channel.guild, config.PROMPT_PING_ROLE_ID, ping, config.PING_ROLE_NAMES.get("prompt")), embed=embed,
             )
             await self.db.execute(
                 "INSERT INTO prompt_log (text, channel_id, message_id, thread_id, posted_at, guild_id, item_id, theme) "
@@ -285,7 +288,7 @@ class Schedule(commands.Cog):
             embed.set_footer(text="Winner gets 🏆 Remix Champion for 7 days")
             message, thread = await self.publish(
                 channel, thread_name=f"Remix Friday – {item['title']}",
-                content=role_ping(channel.guild, config.CHALLENGE_PING_ROLE_ID, ping), embed=embed,
+                content=role_ping(channel.guild, config.CHALLENGE_PING_ROLE_ID, ping, config.PING_ROLE_NAMES.get("challenge")), embed=embed,
                 archive_minutes=10080,
             )
             if thread is None:

@@ -18,6 +18,7 @@ logger = logging.getLogger("bot")
 COGS = [
     "cogs.general",
     "cogs.welcome",
+    "cogs.onboarding",
     "cogs.lfg",
     "cogs.events",
     "cogs.roles",

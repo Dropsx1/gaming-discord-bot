@@ -112,6 +112,29 @@ MIGRATIONS: list[list[str]] = [
             PRIMARY KEY (message_id, user_id)
         )""",
     ],
+    # v4: events with RSVP buttons
+    [
+        """CREATE TABLE events (
+            message_id INTEGER PRIMARY KEY,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            starts_at INTEGER NOT NULL,
+            host_id INTEGER NOT NULL,
+            reminded INTEGER NOT NULL DEFAULT 0,
+            closed INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        )""",
+        "CREATE INDEX idx_events_open ON events (closed, starts_at)",
+        """CREATE TABLE event_rsvps (
+            message_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('going', 'maybe')),
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (message_id, user_id)
+        )""",
+    ],
 ]
 
 

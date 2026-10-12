@@ -1,4 +1,4 @@
-"""Self-role menus. Edit PLATFORM_ROLES / GAME_ROLES in config.py."""
+"""Self-role menus. Edit PLATFORM_ROLES / GAME_ROLES / INTEREST_ROLES / PING_ROLES in config.py."""
 
 import logging
 from typing import Optional, Union
@@ -97,6 +97,10 @@ class RoleView(discord.ui.View):
             self.add_item(RoleSelect(config.PLATFORM_ROLES, "🎮 Choose your platform(s)", "selfroles:platform"))
         if config.GAME_ROLES:
             self.add_item(RoleSelect(config.GAME_ROLES, "🕹️ Choose your main game(s)", "selfroles:games"))
+        if config.INTEREST_ROLES:
+            self.add_item(RoleSelect(config.INTEREST_ROLES, "✨ What are you into?", "selfroles:interests"))
+        if config.PING_ROLES:
+            self.add_item(RoleSelect(config.PING_ROLES, "🔔 Which pings do you want?", "selfroles:pings"))
 
 
 class Roles(commands.Cog):
@@ -114,8 +118,11 @@ class Roles(commands.Cog):
         embed = discord.Embed(
             title="🎭 Pick Your Roles",
             description=(
-                "Choose your **platforms** and **main games** below so squads can find you.\n"
-                "You can pick multiple. To remove a role, open the menu and deselect it."
+                "Use the menus below. You can pick several in each one.\n\n"
+                "🎮 **Platforms** and 🕹️ **Games** help squads find you for LFG.\n"
+                "✨ **Interests** show what you're into: creating, AI, tech or game dev.\n"
+                "🔔 **Pings** are opt-in notifications for events, challenges, game nights and the daily prompt.\n\n"
+                "To remove a role, open its menu and deselect it."
             ),
             color=discord.Color.purple(),
         )

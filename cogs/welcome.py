@@ -22,8 +22,8 @@ class Welcome(commands.Cog):
             title=f"Welcome to {member.guild.name}, {member.display_name}! 🎮",
             description=(
                 f"Hey {member.mention}, glad you made it!\n\n"
-                f"📌 **Start here:** head to {start_here} to read the rules and grab your roles.\n"
-                f"🎭 **Roles:** pick your platform and main games so squads can find you.\n"
+                f"📌 **Start here:** head to {start_here}, read the rules and click **I accept** to unlock the server.\n"
+                f"🎭 **Roles:** pick your platforms, games and interests, plus pings for events and challenges.\n"
                 f"🤝 **LFG:** use `/lfg` in {lfg} to find teammates, or hop into a voice channel.\n\n"
                 f"Have fun and keep it chill. GG!"
             ),
@@ -39,7 +39,8 @@ class Welcome(commands.Cog):
             return
         logger.info("Member joined: %s (%s) in %s", member, member.id, member.guild)
 
-        if config.MEMBER_ROLE_ID:
+        # With the rules button (/rulespanel) the member role is earned there instead.
+        if config.MEMBER_ROLE_ON_JOIN and config.MEMBER_ROLE_ID:
             role = member.guild.get_role(config.MEMBER_ROLE_ID)
             if role:
                 try:
