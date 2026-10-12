@@ -14,7 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ.update(DB_PATH=os.path.join(tempfile.mkdtemp(), "names.db"), GUILD_ID="", SCHEDULE_ENABLED="false")
+DB_FILE = os.path.join(tempfile.mkdtemp(), "names.db")  # own DB, so tests never share state
+os.environ.update(DB_PATH=DB_FILE, GUILD_ID="", SCHEDULE_ENABLED="false")
 
 import discord  # noqa: E402
 from discord.ext import commands  # noqa: E402
@@ -79,7 +80,8 @@ async def _run():
     assert content.render_item(mascot, "Nexus Arcade")["description"] == "Invent a mascot for Nexus Arcade."
 
     # Scheduled posts fill in the name of the server they're posted in.
-    db = Database(os.environ["DB_PATH"])
+    sch.config.GUILD_ID = 0
+    db = Database(DB_FILE)
     await db.connect()
     await gc.init(db)
     try:

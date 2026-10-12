@@ -193,7 +193,7 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements.txt
 cp .env.example .env    # fill in DISCORD_TOKEN (everything else is optional)
 python main.py          # database goes to ./data/bot.db
-python tests/test_setup.py && python tests/test_multiserver.py   # offline tests, no token needed
+python -m pytest tests/   # offline tests, no token needed (pip install pytest)
 ```
 
 ## 4. First-time setup in Discord (staff)

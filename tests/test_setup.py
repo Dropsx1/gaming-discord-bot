@@ -14,8 +14,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 HOME_GUILD = 111
+DB_FILE = os.path.join(tempfile.mkdtemp(), "test.db")  # own DB, so tests never share state
 os.environ.update(
-    DB_PATH=os.path.join(tempfile.mkdtemp(), "test.db"),
+    DB_PATH=DB_FILE,
     GUILD_ID=str(HOME_GUILD),
     WELCOME_CHANNEL_ID="999",  # env ID: must only apply to the home server
 )
@@ -153,7 +154,9 @@ EXPECTED_ITEMS = len(setup_cog.ROLES) + len(setup_cog.LAYOUT) + sum(len(c.channe
 
 # ------------------------------------------------------------------ tests
 async def _run_all():
-    db = Database(os.environ["DB_PATH"])
+    # Set the "home server" config here: another test module may have loaded config first.
+    gc.config.GUILD_ID, gc.config.WELCOME_CHANNEL_ID = HOME_GUILD, 999
+    db = Database(DB_FILE)
     await db.connect()
     await gc.init(db)
     try:

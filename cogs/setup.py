@@ -8,6 +8,7 @@ reused and never modified; only items it creates get permissions set.
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -80,6 +81,11 @@ LAYOUT = [
     CategorySpec("Voice", "VOICE_CATEGORY_ID", [ChannelSpec("➕ Join to Create", "JOIN_TO_CREATE_CHANNEL_ID", voice=True)]),
 ]
 
+# Auto-resume after a rate limit: extra seconds to wait, longest wait we'll do, and attempts.
+RESUME_PADDING = 5
+RESUME_MAX_WAIT = 3600
+RESUME_MAX_ROUNDS = 5
+
 # Prompt of the Day and Remix Friday also work in forum channels.
 FORUM_OK = {"PROMPT_CHANNEL_ID", "CHALLENGE_CHANNEL_ID"}
 
@@ -94,6 +100,8 @@ class Report:
         self.reused: list[str] = []
         self.warnings: list[str] = []
         self.failed: list[str] = []
+        self.waiting: list[str] = []   # not created yet because Discord is rate-limiting us
+        self.retry_at: float = 0.0     # unix time when Discord allows creating again
         self.ids: dict[str, int] = {}
 
 
@@ -106,6 +114,19 @@ class SetupRunner:
         self.me = guild.me
         self.report = Report()
         self.reason = "Bot /setup"
+        self.waiting_keys: set[str] = set()  # roles/categories postponed by a rate limit
+
+    # ---------------------------------------------------------- rate limits
+    def _limited(self) -> bool:
+        return self.report.retry_at > time.time()
+
+    def _postpone(self, key: str, label: str, error: Optional[discord.RateLimited] = None) -> None:
+        """Discord is rate-limiting creation: stop trying for now and mark the item as waiting."""
+        if error is not None:
+            self.report.retry_at = max(self.report.retry_at, time.time() + error.retry_after)
+            logger.warning("Rate-limited during /setup in %s for %.0fs", self.guild, error.retry_after)
+        self.waiting_keys.add(key)
+        self.report.waiting.append(label)
 
     # --------------------------------------------------------------- lookup
     def _saved(self, key: str) -> int:
@@ -181,11 +202,17 @@ class SetupRunner:
         if self.dry_run:
             self.report.created.append(f"@{spec.name}")
             return None
+        if self._limited():
+            self._postpone(spec.key, f"@{spec.name}")
+            return None
         try:
             role = await self.guild.create_role(
                 name=spec.name, colour=spec.color, mentionable=spec.mentionable, reason=self.reason
             )  # new roles start at the bottom, i.e. below the bot's top role
-        except (discord.HTTPException, discord.RateLimited) as e:
+        except discord.RateLimited as e:
+            self._postpone(spec.key, f"@{spec.name}", e)
+            return None
+        except discord.HTTPException as e:
             self.report.failed.append(f"@{spec.name} ({e.__class__.__name__})")
             return None
         self.report.created.append(f"@{role.name}")
@@ -202,9 +229,15 @@ class SetupRunner:
                     self.report.warnings.append(f"📁 {cat.name} is visible to @everyone. Hide it in its permissions.")
                 if not cat.permissions_for(self.me).view_channel:
                     self.report.warnings.append(f"📁 {cat.name} is hidden from me. Allow my role to View Channel.")
+                if staff is not None and not cat.permissions_for(staff).view_channel:
+                    self.report.warnings.append(f"📁 {cat.name} is hidden from @{staff.name}. Allow it View Channel.")
             return cat
         if self.dry_run:
             self.report.created.append(f"📁 {spec.name}")
+            return None
+        # A hidden category must include Staff; if the Staff role is still waiting, wait with it.
+        if self._limited() or (spec.private and staff is None and "STAFF_ROLE_ID" in self.waiting_keys):
+            self._postpone(spec.key, f"📁 {spec.name}")
             return None
         try:
             cat = await self.guild.create_category(
@@ -212,7 +245,10 @@ class SetupRunner:
                 overwrites=self.private_overwrites(staff) if spec.private else {},
                 reason=self.reason,
             )
-        except (discord.HTTPException, discord.RateLimited) as e:
+        except discord.RateLimited as e:
+            self._postpone(spec.key, f"📁 {spec.name}", e)
+            return None
+        except discord.HTTPException as e:
             self.report.failed.append(f"📁 {spec.name} ({e.__class__.__name__})")
             return None
         self.report.created.append(f"📁 {cat.name}")
@@ -230,7 +266,13 @@ class SetupRunner:
             self.report.created.append(f"{label} (in {cat_spec.name})")
             return None
         if category is None:
-            self.report.failed.append(f"{label} (its category {cat_spec.name} is missing)")
+            if cat_spec.key in self.waiting_keys:
+                self._postpone(spec.key, label)  # created once its category exists
+            else:
+                self.report.failed.append(f"{label} (its category {cat_spec.name} is missing)")
+            return None
+        if self._limited():
+            self._postpone(spec.key, label)
             return None
         try:
             if spec.voice:
@@ -239,7 +281,10 @@ class SetupRunner:
                 ow = self.channel_overwrites(spec, category)
                 kwargs = {"overwrites": ow} if ow is not None else {}
                 ch = await self.guild.create_text_channel(spec.name, category=category, reason=self.reason, **kwargs)
-        except (discord.HTTPException, discord.RateLimited) as e:
+        except discord.RateLimited as e:
+            self._postpone(spec.key, label, e)
+            return None
+        except discord.HTTPException as e:
             self.report.failed.append(f"{label} ({e.__class__.__name__})")
             return None
         self.report.created.append(f"🔊 {ch.name}" if spec.voice else ch.mention)
@@ -288,10 +333,25 @@ def build_summary(guild: discord.Guild, report: Report, dry_run: bool) -> discor
     title = "🔍 /setup dry run: nothing was changed" if dry_run else "🛠️ Server setup complete"
     if report.failed and not dry_run:
         title = "🛠️ Server setup finished with problems"
-    embed = discord.Embed(title=title, color=discord.Color.orange() if report.failed else discord.Color.green())
+    if report.waiting and not dry_run:
+        title = "⏳ Server setup partly done: finishing automatically"
+    color = discord.Color.green()
+    if report.waiting:
+        color = discord.Color.blue()
+    if report.failed:
+        color = discord.Color.orange()
+    embed = discord.Embed(title=title, color=color)
+    if report.waiting and not dry_run:
+        ts = int(report.retry_at) if report.retry_at else int(time.time()) + 600
+        embed.description = (
+            "Discord limits how fast bots can create channels and roles, and that limit was hit. "
+            f"Everything done so far is saved. I'll create the rest automatically <t:{ts}:R> "
+            "and DM you when it's done. You can also run `/setup` again after that time."
+        )
     sections = [
         ("🆕 Would create" if dry_run else "🆕 Created", report.created),
         ("♻️ Would reuse" if dry_run else "♻️ Reused", report.reused),
+        ("⏳ Waiting for Discord", report.waiting),
         ("⚠️ Check these", report.warnings),
         ("❌ Failed", report.failed),
     ]
@@ -311,6 +371,8 @@ def build_summary(guild: discord.Guild, report: Report, dry_run: bool) -> discor
             "Give the **Staff** role to your mods. Give it Moderate/Kick Members too if they should use `/timeout` and `/kick`.",
             "Scheduled posts (Prompt of the Day, Remix Friday, digest) start automatically. Try `/schedule-test`.",
         ]
+        if report.waiting:
+            steps = ["Wait for the rest to be created (see above). Then post the panels and give out Staff."] + steps[1:]
         if report.failed:
             steps.insert(0, "Some items failed. Fix the issue above, then run `/setup` again. It only adds what's missing.")
         embed.add_field(name="Next steps", value=trim("\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)), 1024),
@@ -371,6 +433,54 @@ class Setup(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.locks: dict[int, asyncio.Lock] = {}
+        self.resume_tasks: dict[int, asyncio.Task] = {}
+
+    async def cog_unload(self):
+        for task in self.resume_tasks.values():
+            task.cancel()
+
+    def schedule_resume(self, guild: discord.Guild, user, channel, retry_at: float) -> None:
+        """Finish a rate-limited /setup once Discord allows it, then tell the admin."""
+        task = self.resume_tasks.get(guild.id)
+        if task is not None and not task.done():
+            return  # already scheduled
+        self.resume_tasks[guild.id] = asyncio.create_task(self._resume(guild.id, user, channel, retry_at))
+
+    async def _resume(self, guild_id: int, user, channel, retry_at: float) -> None:
+        report = None
+        for _ in range(RESUME_MAX_ROUNDS):
+            delay = max(RESUME_PADDING, retry_at - time.time() + RESUME_PADDING)
+            if delay > RESUME_MAX_WAIT:
+                break
+            await asyncio.sleep(delay)
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                return  # bot left the server
+            async with self.locks.setdefault(guild_id, asyncio.Lock()):
+                report = await SetupRunner(guild, dry_run=False).run()
+            logger.info("Resumed /setup in %s: %d created, %d still waiting", guild, len(report.created),
+                        len(report.waiting))
+            if not report.waiting:
+                break
+            retry_at = report.retry_at
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            return
+        if report is None or report.waiting:
+            text = (f"⏳ Discord is still limiting how fast I can create things in **{guild.name}**. "
+                    "Please run `/setup` again in about an hour. It picks up where it left off.")
+            embed = build_summary(guild, report, dry_run=False) if report else None
+        else:
+            text = f"✅ `/setup` finished in **{guild.name}**."
+            embed = build_summary(guild, report, dry_run=False)
+        try:
+            await user.send(content=text, embed=embed)
+        except (discord.HTTPException, AttributeError):
+            if channel is not None:
+                try:
+                    await channel.send(content=f"{getattr(user, 'mention', '')} {text}".strip(), embed=embed)
+                except discord.HTTPException:
+                    logger.warning("Could not report resumed /setup result in %s", guild)
 
     @commands.hybrid_command(name="setup", description="Create/reuse all channels and roles the bot needs (admin)")
     @app_commands.describe(dry_run="Only report what would be created or reused, without changing anything")
@@ -386,10 +496,19 @@ class Setup(commands.Cog):
             logger.info("%s ran /setup (dry_run=%s) in %s", ctx.author, dry_run, ctx.guild)
             report = await SetupRunner(ctx.guild, dry_run).run()
             logger.info(
-                "/setup in %s: %d created, %d reused, %d warnings, %d failed",
-                ctx.guild, len(report.created), len(report.reused), len(report.warnings), len(report.failed),
+                "/setup in %s: %d created, %d reused, %d waiting, %d warnings, %d failed",
+                ctx.guild, len(report.created), len(report.reused), len(report.waiting), len(report.warnings),
+                len(report.failed),
             )
             await ctx.send(embed=build_summary(ctx.guild, report, dry_run), ephemeral=True)
+            if dry_run:
+                return
+            if report.waiting:
+                self.schedule_resume(ctx.guild, ctx.author, ctx.channel, report.retry_at)
+            else:
+                pending = self.resume_tasks.pop(ctx.guild.id, None)
+                if pending is not None and not pending.done():
+                    pending.cancel()  # finished by hand; no follow-up needed
 
     @commands.hybrid_command(name="setup-show", description="Show this server's saved bot configuration (admin)")
     @app_commands.default_permissions(administrator=True)

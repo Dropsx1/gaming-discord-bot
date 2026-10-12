@@ -13,7 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ.update(DB_PATH=os.path.join(tempfile.mkdtemp(), "multi.db"), GUILD_ID="", SCHEDULE_ENABLED="false")
+DB_FILE = os.path.join(tempfile.mkdtemp(), "multi.db")  # own DB, so tests never share state
+os.environ.update(DB_PATH=DB_FILE, GUILD_ID="", SCHEDULE_ENABLED="false")
 for key in ("PROMPT_CHANNEL_ID", "DIGEST_CHANNEL_ID", "CHALLENGE_CHANNEL_ID"):
     os.environ.pop(key, None)
 
@@ -66,7 +67,8 @@ class Guild:
 
 
 async def _run_all():
-    db = Database(os.environ["DB_PATH"])
+    sch.config.GUILD_ID = 0  # config may already be loaded by another test module
+    db = Database(DB_FILE)
     await db.connect()
     await gc.init(db)
     try:

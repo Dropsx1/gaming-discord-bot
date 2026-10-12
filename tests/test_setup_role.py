@@ -13,7 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ.update(DB_PATH=os.path.join(tempfile.mkdtemp(), "setup_role.db"), GUILD_ID="", MEMBER_ROLE_ID="")
+DB_FILE = os.path.join(tempfile.mkdtemp(), "setup_role.db")  # own DB, so tests never share state
+os.environ.update(DB_PATH=DB_FILE, GUILD_ID="", MEMBER_ROLE_ID="")
 
 import discord  # noqa: E402
 from discord.ext import commands  # noqa: E402
@@ -62,7 +63,8 @@ class Ctx:
 
 
 async def _run():
-    db = Database(os.environ["DB_PATH"])
+    gc.config.GUILD_ID, gc.config.MEMBER_ROLE_ID = 0, 0
+    db = Database(DB_FILE)
     await db.connect()
     await gc.init(db)
     try:
