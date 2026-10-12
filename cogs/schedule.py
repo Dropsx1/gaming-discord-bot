@@ -31,6 +31,7 @@ from discord.ext import commands, tasks
 
 import config
 from utils import content
+from utils import guildconfig as gc
 from utils.db import now as utc_now
 from utils.helpers import trim
 
@@ -103,6 +104,11 @@ class Schedule(commands.Cog):
     async def cog_load(self):
         rows = await self.db.fetchall("SELECT thread_id FROM challenges WHERE closed = 0 AND thread_id IS NOT NULL")
         self.remix_threads = {r[0] for r in rows}
+        if config.GUILD_ID:
+            # Job keys used to be global ("2026-10-12"); they're now per server ("<guild>:2026-10-12").
+            await self.db.execute(
+                "UPDATE job_runs SET run_key = ? || ':' || run_key WHERE run_key NOT LIKE '%:%'", (str(config.GUILD_ID),)
+            )
         if not config.SCHEDULE_ENABLED:
             logger.info("SCHEDULE_ENABLED is off; scheduled posts are paused (/schedule-test still works)")
 
@@ -122,6 +128,10 @@ class Schedule(commands.Cog):
 
     def lock(self, name: str) -> asyncio.Lock:
         return self.locks.setdefault(name, asyncio.Lock())
+
+    def guilds_with(self, key: str) -> list[discord.Guild]:
+        """Servers where the channel for `key` is configured and exists."""
+        return [g for g in self.bot.guilds if gc.channel(g, key) is not None]
 
     # ------------------------------------------------------------ helpers
     async def resolve(self, channel_id: Optional[int]):
@@ -172,14 +182,14 @@ class Schedule(commands.Cog):
         return True
 
     # ===================================================== Prompt of the Day
-    async def post_prompt(self, force: bool = False, ping: bool = True) -> str:
-        async with self.lock("prompt"):
-            key = local_now().date().isoformat()
+    async def post_prompt(self, guild: discord.Guild, force: bool = False, ping: bool = True) -> str:
+        async with self.lock(f"prompt:{guild.id}"):
+            key = f"{guild.id}:{local_now().date().isoformat()}"
             if not force and await self.db.job_ran("prompt", key):
                 return "Today's prompt was already posted."
-            channel = await self.resolve(config.PROMPT_CHANNEL_ID)
+            channel = gc.channel(guild, "PROMPT_CHANNEL_ID")
             if channel is None:
-                return "PROMPT_CHANNEL_ID is not set or the channel can't be found."
+                return "No Prompt of the Day channel is configured here (run /setup)."
             if not force:
                 await self.db.mark_job("prompt", key)  # before posting: a failure must not retry every 10 min
 
@@ -194,7 +204,7 @@ class Schedule(commands.Cog):
             embed.set_footer(text=f"{item['theme'].title()} • {day}")
             message, thread = await self.publish(
                 channel, thread_name=f"Prompt of the Day – {day}",
-                content=role_ping(channel.guild, config.PROMPT_PING_ROLE_ID, ping, config.PING_ROLE_NAMES.get("prompt")), embed=embed,
+                content=role_ping(guild, gc.get(guild, "PROMPT_PING_ROLE_ID"), ping, config.PING_ROLE_NAMES.get("prompt")), embed=embed,
             )
             await self.db.execute(
                 "INSERT INTO prompt_log (text, channel_id, message_id, thread_id, posted_at, guild_id, item_id, theme) "
@@ -202,20 +212,24 @@ class Schedule(commands.Cog):
                 (item["text"], channel.id, message.id, thread.id if thread else None, utc_now(), channel.guild.id, item["id"], item["theme"]),
             )
             await self.db.mark_used(content.PROMPTS, item["id"])
-            logger.info("Posted Prompt of the Day #%s in #%s", item["id"], channel)
+            logger.info("Posted Prompt of the Day #%s in #%s (%s)", item["id"], channel, guild)
             return f"Posted prompt #{item['id']} in {channel.mention}."
 
-    async def judge_prompt(self, force: bool = False) -> str:
-        async with self.lock("prompt_king"):
+    async def judge_prompt(self, guild: discord.Guild, force: bool = False) -> str:
+        async with self.lock(f"prompt_king:{guild.id}"):
             today_start = int(datetime.combine(local_now().date(), datetime.min.time(), tzinfo=TZ).timestamp())
             cutoff = utc_now() + 1 if force else today_start  # normally only prompts from previous days
             row = await self.db.fetchone(
-                "SELECT * FROM prompt_log WHERE judged = 0 AND posted_at < ? ORDER BY posted_at DESC LIMIT 1", (cutoff,)
+                "SELECT * FROM prompt_log WHERE guild_id = ? AND judged = 0 AND posted_at < ? ORDER BY posted_at DESC LIMIT 1",
+                (guild.id, cutoff),
             )
             if row is None:
                 return "No prompt waiting to be judged."
             # Older unjudged prompts (bot was offline for days) are skipped, not crowned.
-            await self.db.execute("UPDATE prompt_log SET judged = 1 WHERE judged = 0 AND posted_at <= ?", (row["posted_at"],))
+            await self.db.execute(
+                "UPDATE prompt_log SET judged = 1 WHERE guild_id = ? AND judged = 0 AND posted_at <= ?",
+                (guild.id, row["posted_at"]),
+            )
 
             thread = await self.resolve(row["thread_id"])
             channel = await self.resolve(row["channel_id"])
@@ -235,7 +249,7 @@ class Schedule(commands.Cog):
 
             member = thread.guild.get_member(best.author.id)
             got_role = bool(member) and await self.grant_temp_role(
-                member, config.PROMPT_KING_ROLE_ID, timedelta(hours=24), "Prompt King"
+                member, gc.get(guild, "PROMPT_KING_ROLE_ID"), timedelta(hours=24), "Prompt King"
             )
             embed = discord.Embed(
                 title="👑 Yesterday's Prompt King",
@@ -251,17 +265,17 @@ class Schedule(commands.Cog):
             return f"Crowned {best.author} with {best_score} reaction(s)."
 
     # ========================================================== Remix Friday
-    async def kickoff_remix(self, force: bool = False, ping: bool = True) -> str:
+    async def kickoff_remix(self, guild: discord.Guild, force: bool = False, ping: bool = True) -> str:
         async with self.lock("remix"):
-            key = week_key(local_now().date())
+            key = f"{guild.id}:{week_key(local_now().date())}"
             if not force and await self.db.job_ran("remix_kickoff", key):
                 return "This week's Remix Friday already started."
-            open_row = await self.db.fetchone("SELECT * FROM challenges WHERE closed = 0 LIMIT 1")
+            open_row = await self.db.fetchone("SELECT * FROM challenges WHERE guild_id = ? AND closed = 0 LIMIT 1", (guild.id,))
             if open_row:
                 return f"A Remix is still open (\"{open_row['theme']}\"). Close it first with the remix_close job."
-            channel = await self.resolve(config.CHALLENGE_CHANNEL_ID)
+            channel = gc.channel(guild, "CHALLENGE_CHANNEL_ID")
             if channel is None:
-                return "CHALLENGE_CHANNEL_ID is not set or the channel can't be found."
+                return "No Remix Friday channel is configured here (run /setup)."
             if not force:
                 await self.db.mark_job("remix_kickoff", key)
 
@@ -288,7 +302,7 @@ class Schedule(commands.Cog):
             embed.set_footer(text="Winner gets 🏆 Remix Champion for 7 days")
             message, thread = await self.publish(
                 channel, thread_name=f"Remix Friday – {item['title']}",
-                content=role_ping(channel.guild, config.CHALLENGE_PING_ROLE_ID, ping, config.PING_ROLE_NAMES.get("challenge")), embed=embed,
+                content=role_ping(guild, gc.get(guild, "CHALLENGE_PING_ROLE_ID"), ping, config.PING_ROLE_NAMES.get("challenge")), embed=embed,
                 archive_minutes=10080,
             )
             if thread is None:
@@ -305,11 +319,13 @@ class Schedule(commands.Cog):
             logger.info("Remix Friday #%s started in #%s, closes %s", item["id"], channel, closes)
             return f"Started Remix \"{item['title']}\" in {channel.mention}, closing <t:{ts}:F>."
 
-    async def remind_remix(self, force: bool = False) -> str:
+    async def remind_remix(self, force: bool = False, guild: Optional[discord.Guild] = None) -> str:
         async with self.lock("remix"):
             rows = await self.db.fetchall(
                 "SELECT * FROM challenges WHERE closed = 0 AND reminded = 0 AND closes_at > ?", (utc_now(),)
             )
+            if guild is not None:
+                rows = [r for r in rows if r["guild_id"] == guild.id]
             sent = 0
             for row in rows:
                 if not force and row["closes_at"] - utc_now() > 3600:
@@ -321,10 +337,12 @@ class Schedule(commands.Cog):
                 await self.db.execute("UPDATE challenges SET reminded = 1 WHERE id = ?", (row["id"],))
             return f"Sent {sent} reminder(s)." if sent else "No open Remix needs a reminder."
 
-    async def close_remix(self, force: bool = False) -> str:
+    async def close_remix(self, force: bool = False, guild: Optional[discord.Guild] = None) -> str:
         async with self.lock("remix"):
             sql = "SELECT * FROM challenges WHERE closed = 0" + ("" if force else " AND closes_at <= ?")
             rows = await self.db.fetchall(sql, () if force else (utc_now(),))
+            if guild is not None:
+                rows = [r for r in rows if r["guild_id"] == guild.id]
             if not rows:
                 return "No Remix is due to close."
             results = []
@@ -362,7 +380,7 @@ class Schedule(commands.Cog):
             await self.db.execute("UPDATE challenges SET winner_id = ? WHERE id = ?", (best.author.id, row["id"]))
             member = thread.guild.get_member(best.author.id)
             got_role = bool(member) and await self.grant_temp_role(
-                member, config.REMIX_CHAMPION_ROLE_ID, timedelta(days=7), "Remix Champion"
+                member, gc.get(thread.guild, "REMIX_CHAMPION_ROLE_ID"), timedelta(days=7), "Remix Champion"
             )
             embed = discord.Embed(
                 title=f"🏆 Remix Champion: {row['theme']}",
@@ -423,60 +441,66 @@ class Schedule(commands.Cog):
                 return value
         return trim(value, 1024)
 
-    async def post_digest(self, force: bool = False) -> str:
-        async with self.lock("digest"):
-            key = week_key(local_now().date())
+    async def build_digest_sections(self) -> tuple[list[discord.Embed], int]:
+        """Fetch every feed once. Returns (one embed per category, number of failed feeds)."""
+        feeds = content.load_feeds()
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            tasks_ = {
+                (cat, url): asyncio.create_task(self.fetch_feed(session, url))
+                for cat, urls in feeds.items() for url in urls
+            }
+            await asyncio.gather(*tasks_.values(), return_exceptions=True)
+
+        embeds, failed = [], 0
+        for cat, urls in feeds.items():
+            embed = discord.Embed(title=CATEGORY_TITLES.get(cat, cat.title()), color=discord.Color.blurple())
+            for url in urls:
+                task = tasks_[(cat, url)]
+                if task.exception() or not task.result()[1]:
+                    failed += 1
+                    logger.warning("Digest feed failed: %s (%s)", url, task.exception() or "no items")
+                    continue
+                title, items = task.result()
+                embed.add_field(name=title, value=self.format_headlines(items), inline=False)
+            if embed.fields:
+                embeds.append(embed)
+        return embeds, failed
+
+    async def post_digest(self, guild: discord.Guild, force: bool = False, sections=None) -> str:
+        """Post the digest in one server. Pass `sections` to reuse feeds already fetched for other servers."""
+        async with self.lock(f"digest:{guild.id}"):
+            key = f"{guild.id}:{week_key(local_now().date())}"
             if not force and await self.db.job_ran("digest", key):
                 return "This week's digest was already posted."
-            channel = await self.resolve(config.DIGEST_CHANNEL_ID)
+            channel = gc.channel(guild, "DIGEST_CHANNEL_ID")
             if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-                return "DIGEST_CHANNEL_ID is not set or isn't a text channel."
+                return "No digest text channel is configured here (run /setup)."
             if not force:
                 await self.db.mark_job("digest", key)
 
-            feeds = content.load_feeds()
-            timeout = aiohttp.ClientTimeout(total=20)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-                tasks_ = {
-                    (cat, url): asyncio.create_task(self.fetch_feed(session, url))
-                    for cat, urls in feeds.items() for url in urls
-                }
-                await asyncio.gather(*tasks_.values(), return_exceptions=True)
-
-            embeds, failed = [], 0
-            for cat, urls in feeds.items():
-                embed = discord.Embed(title=CATEGORY_TITLES.get(cat, cat.title()), color=discord.Color.blurple())
-                for url in urls:
-                    task = tasks_[(cat, url)]
-                    if task.exception() or not task.result()[1]:
-                        failed += 1
-                        logger.warning("Digest feed failed: %s (%s)", url, task.exception() or "no items")
-                        continue
-                    title, items = task.result()
-                    embed.add_field(name=title, value=self.format_headlines(items), inline=False)
-                if embed.fields:
-                    embeds.append(embed)
-
+            embeds, failed = sections if sections is not None else await self.build_digest_sections()
             summary = discord.Embed(
                 title=f"📰 Weekly Digest: week of {local_now().strftime('%B %-d, %Y')}",
                 description="The newest headlines from around gaming, AI and tech. Have a great week!",
                 color=discord.Color.dark_teal(),
             )
-            summary.add_field(name="🏆 Last week's Remix winner", value=await self.last_remix_winner(), inline=False)
-            summary.add_field(name="💬 Most active channel", value=await self.most_active_channel(channel.guild), inline=False)
+            summary.add_field(name="🏆 Last week's Remix winner", value=await self.last_remix_winner(guild), inline=False)
+            summary.add_field(name="💬 Most active channel", value=await self.most_active_channel(guild), inline=False)
             if failed:
                 summary.set_footer(text=f"{failed} feed(s) couldn't be loaded this week")
 
             await channel.send(embed=summary)
             for embed in embeds:  # one message per category keeps under Discord's 6000-char limit
                 await channel.send(embed=embed)
-            logger.info("Posted weekly digest (%d sections, %d feeds failed)", len(embeds), failed)
+            logger.info("Posted weekly digest in %s (%d sections, %d feeds failed)", guild, len(embeds), failed)
             return f"Posted the digest in {channel.mention} ({failed} feed(s) failed)."
 
-    async def last_remix_winner(self) -> str:
+    async def last_remix_winner(self, guild: discord.Guild) -> str:
         row = await self.db.fetchone(
-            "SELECT * FROM challenges WHERE closed = 1 AND closes_at >= ? ORDER BY closes_at DESC LIMIT 1",
-            (utc_now() - 8 * 86400,),
+            "SELECT * FROM challenges WHERE guild_id = ? AND closed = 1 AND closes_at >= ? "
+            "ORDER BY closes_at DESC LIMIT 1",
+            (guild.id, utc_now() - 8 * 86400),
         )
         if row is None:
             return "No Remix Friday last week."
@@ -547,49 +571,65 @@ class Schedule(commands.Cog):
         return removed
 
     async def catch_up(self) -> None:
-        """Run jobs that were missed because the bot was offline at their time."""
+        """Run jobs that were missed because the bot was offline at their time, in every server."""
         now = local_now()
 
         def due(t, weekday=None) -> bool:
             start = today_at(t)
             return (weekday is None or now.weekday() == weekday) and start <= now < start + CATCH_UP_WINDOW
 
-        if due(config.PROMPT_KING_TIME):
-            await self.judge_prompt()  # no-op unless yesterday's prompt is unjudged
-        if due(config.PROMPT_TIME) and config.PROMPT_CHANNEL_ID:
-            await self.post_prompt()
-        if due(config.DIGEST_TIME, MON) and config.DIGEST_CHANNEL_ID:
-            await self.post_digest()
-        if due(config.REMIX_KICKOFF_TIME, FRI) and config.CHALLENGE_CHANNEL_ID:
-            await self.kickoff_remix()
-        await self.remind_remix()  # anything closing within the hour
-        await self.close_remix()   # anything past its deadline
+        for guild in self.bot.guilds:
+            try:
+                if due(config.PROMPT_KING_TIME):
+                    await self.judge_prompt(guild)  # no-op unless yesterday's prompt is unjudged
+                if due(config.PROMPT_TIME) and gc.channel(guild, "PROMPT_CHANNEL_ID"):
+                    await self.post_prompt(guild)
+                if due(config.DIGEST_TIME, MON) and gc.channel(guild, "DIGEST_CHANNEL_ID"):
+                    await self.post_digest(guild)
+                if due(config.REMIX_KICKOFF_TIME, FRI) and gc.channel(guild, "CHALLENGE_CHANNEL_ID"):
+                    await self.kickoff_remix(guild)
+            except Exception:
+                logger.exception("Catch-up failed in %s", guild)
+        await self.remind_remix()  # anything closing within the hour, any server
+        await self.close_remix()   # anything past its deadline, any server
 
     # ================================================================ loops
-    async def _run(self, name: str, coro, weekday: Optional[int] = None):
+    async def _run(self, name: str, job, guilds: Optional[list] = None, weekday: Optional[int] = None):
+        """Run `job(guild)` for each server (or `job()` once when guilds is None). One failure never stops the rest."""
         if weekday is not None and local_now().weekday() != weekday:
             return
-        try:
-            result = await coro()
-            logger.info("Job %s: %s", name, result)
-        except Exception:
-            logger.exception("Scheduled job %s failed", name)
+        for guild in (guilds if guilds is not None else [None]):
+            try:
+                result = await (job(guild) if guild is not None else job())
+                logger.info("Job %s%s: %s", name, f" [{guild}]" if guild else "", result)
+            except Exception:
+                logger.exception("Scheduled job %s failed%s", name, f" in {guild}" if guild else "")
 
     @tasks.loop(time=at(config.PROMPT_KING_TIME))
     async def king_loop(self):
-        await self._run("prompt_king", self.judge_prompt)
+        await self._run("prompt_king", self.judge_prompt, guilds=list(self.bot.guilds))
 
     @tasks.loop(time=at(config.PROMPT_TIME))
     async def prompt_loop(self):
-        await self._run("prompt", self.post_prompt)
+        await self._run("prompt", self.post_prompt, guilds=self.guilds_with("PROMPT_CHANNEL_ID"))
 
     @tasks.loop(time=at(config.DIGEST_TIME))
     async def digest_loop(self):
-        await self._run("digest", self.post_digest, weekday=MON)
+        if local_now().weekday() != MON:
+            return
+        guilds = self.guilds_with("DIGEST_CHANNEL_ID")
+        if not guilds:
+            return
+        try:
+            sections = await self.build_digest_sections()  # fetch feeds once for all servers
+        except Exception:
+            logger.exception("Could not build the digest")
+            return
+        await self._run("digest", lambda g: self.post_digest(g, sections=sections), guilds=guilds)
 
     @tasks.loop(time=at(config.REMIX_KICKOFF_TIME))
     async def kickoff_loop(self):
-        await self._run("remix_kickoff", self.kickoff_remix, weekday=FRI)
+        await self._run("remix_kickoff", self.kickoff_remix, guilds=self.guilds_with("CHALLENGE_CHANNEL_ID"), weekday=FRI)
 
     @tasks.loop(time=at(config.REMIX_REMINDER_TIME))
     async def reminder_loop(self):
@@ -626,12 +666,12 @@ class Schedule(commands.Cog):
     async def schedule_test(self, ctx: commands.Context, job: JobName, ping: bool = False):
         await ctx.defer(ephemeral=True)
         runners = {
-            "prompt": lambda: self.post_prompt(force=True, ping=ping),
-            "prompt_king": lambda: self.judge_prompt(force=True),
-            "digest": lambda: self.post_digest(force=True),
-            "remix_kickoff": lambda: self.kickoff_remix(force=True, ping=ping),
-            "remix_reminder": lambda: self.remind_remix(force=True),
-            "remix_close": lambda: self.close_remix(force=True),
+            "prompt": lambda: self.post_prompt(ctx.guild, force=True, ping=ping),
+            "prompt_king": lambda: self.judge_prompt(ctx.guild, force=True),
+            "digest": lambda: self.post_digest(ctx.guild, force=True),
+            "remix_kickoff": lambda: self.kickoff_remix(ctx.guild, force=True, ping=ping),
+            "remix_reminder": lambda: self.remind_remix(force=True, guild=ctx.guild),
+            "remix_close": lambda: self.close_remix(force=True, guild=ctx.guild),
             "cleanup": lambda: self._cleanup_report(),
         }
         logger.info("%s ran /schedule-test %s", ctx.author, job)

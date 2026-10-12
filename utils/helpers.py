@@ -8,7 +8,7 @@ from typing import Optional
 import discord
 from discord.ext import commands
 
-import config
+from utils import guildconfig as gc
 
 log = logging.getLogger("bot.utils")
 
@@ -25,7 +25,8 @@ def is_staff(member: discord.abc.User) -> bool:
     perms = member.guild_permissions
     if perms.administrator or perms.manage_guild:
         return True
-    return bool(config.STAFF_ROLE_ID) and member.get_role(config.STAFF_ROLE_ID) is not None
+    staff_role_id = gc.get(member.guild, "STAFF_ROLE_ID")
+    return bool(staff_role_id) and member.get_role(staff_role_id) is not None
 
 
 def staff_only():

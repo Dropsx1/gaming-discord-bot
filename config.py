@@ -55,6 +55,7 @@ ON_RAILWAY = bool(_str("RAILWAY_ENVIRONMENT") or _str("RAILWAY_PROJECT_ID"))
 # --- Channels ---------------------------------------------------------------
 WELCOME_CHANNEL_ID = _int("WELCOME_CHANNEL_ID")
 START_HERE_CHANNEL_ID = _int("START_HERE_CHANNEL_ID")
+SELF_ROLES_CHANNEL_ID = _int("SELF_ROLES_CHANNEL_ID")  # where /roles is posted (welcome text links it)
 LFG_CHANNEL_ID = _int("LFG_CHANNEL_ID")
 EVENT_CHANNEL_ID = _int("EVENT_CHANNEL_ID")
 LOG_CHANNEL_ID = _int("LOG_CHANNEL_ID")

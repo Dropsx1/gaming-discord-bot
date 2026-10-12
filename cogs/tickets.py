@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from utils import guildconfig as gc
 from utils.helpers import is_staff, send_log, staff_only
 
 logger = logging.getLogger("bot.tickets")
@@ -29,7 +30,8 @@ def ticket_owner_id(channel: discord.abc.GuildChannel) -> Optional[int]:
     """Return the ticket owner's ID if this channel is a ticket, else None."""
     if not isinstance(channel, discord.TextChannel) or not channel.topic:
         return None
-    if config.TICKET_CATEGORY_ID and channel.category_id != config.TICKET_CATEGORY_ID:
+    category_id = gc.get(channel.guild, "TICKET_CATEGORY_ID")
+    if category_id and channel.category_id != category_id:
         return None
     m = OWNER_RE.search(channel.topic)
     return int(m.group(1)) if m else None
@@ -110,7 +112,7 @@ class Tickets(commands.Cog):
 
     # ---------------------------------------------------------------- create
     def find_open_ticket(self, guild: discord.Guild, user_id: int) -> Optional[discord.TextChannel]:
-        category = guild.get_channel(config.TICKET_CATEGORY_ID)
+        category = gc.channel(guild, "TICKET_CATEGORY_ID")
         if not isinstance(category, discord.CategoryChannel):
             return None
         for ch in category.text_channels:
@@ -120,10 +122,10 @@ class Tickets(commands.Cog):
 
     async def open_ticket_for(self, guild: discord.Guild, user: discord.Member) -> str:
         """Create a ticket and return a user-facing status message."""
-        category = guild.get_channel(config.TICKET_CATEGORY_ID)
+        category = gc.channel(guild, "TICKET_CATEGORY_ID")
         if not isinstance(category, discord.CategoryChannel):
-            logger.warning("TICKET_CATEGORY_ID is missing or not a category")
-            return "⚠️ Tickets aren't configured yet. Please ping staff."
+            logger.warning("TICKET_CATEGORY_ID is missing or not a category in %s", guild)
+            return "⚠️ Tickets aren't configured yet. Please ping staff (they can run `/setup`)."
         if existing := self.find_open_ticket(guild, user.id):
             return f"You already have an open ticket: {existing.mention}"
         if user.id in self._creating:
@@ -131,7 +133,7 @@ class Tickets(commands.Cog):
 
         self._creating.add(user.id)
         try:
-            staff_role = guild.get_role(config.STAFF_ROLE_ID) if config.STAFF_ROLE_ID else None
+            staff_role = gc.role(guild, "STAFF_ROLE_ID")
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 user: discord.PermissionOverwrite(
@@ -171,7 +173,7 @@ class Tickets(commands.Cog):
             log = discord.Embed(title="🎫 Ticket Opened", color=discord.Color.green(), timestamp=discord.utils.utcnow())
             log.add_field(name="User", value=f"{user.mention} (`{user}`)")
             log.add_field(name="Channel", value=channel.mention)
-            await send_log(guild, config.TICKET_LOG_CHANNEL_ID, log)
+            await send_log(guild, gc.get(guild, "TICKET_LOG_CHANNEL_ID"), log)
             return f"✅ Ticket created: {channel.mention}"
         except discord.Forbidden:
             logger.error("Missing permissions to create ticket channels")
@@ -246,7 +248,7 @@ class Tickets(commands.Cog):
                     file = await self.build_transcript(channel)
                 except discord.HTTPException as e:
                     logger.warning("Transcript failed for #%s: %s", channel.name, e)
-            await send_log(channel.guild, config.TICKET_LOG_CHANNEL_ID, log, file=file)
+            await send_log(channel.guild, gc.get(channel.guild, "TICKET_LOG_CHANNEL_ID"), log, file=file)
 
             if transcript and config.TICKET_DM_TRANSCRIPT:
                 owner = channel.guild.get_member(owner_id)

@@ -2,13 +2,15 @@
 
 The Discord bot for **Universal Play Haven**, an SFW gaming community. It's built with **Python 3.12** and **discord.py 2.x**, keeps its data in **SQLite**, and is deployed on **Railway**.
 
+**Setting up a server takes one command.** Invite the bot and run **`/setup`**. It creates (or reuses) every channel and role it needs and remembers their IDs, so there's no ID copying or env-var editing. One running bot can serve several servers at once.
+
 Every command works as a **slash command** (`/lfg`) and also with the **`!` prefix** (`!lfg`). Scheduled times use **US Eastern** (America/New_York) and adjust for daylight saving automatically. The bot never pings @everyone or @here.
 
 ## Features
 
 | Feature | Commands |
 |---|---|
-| **Welcome + rules gate**: welcome message pointing to #start-here, and a rules panel whose **I accept** button grants the member role | automatic, `/rulespanel`, `/welcometest` |
+| **Welcome + rules gate**: welcome message pointing to #rules, and a rules panel whose **I accept** button grants the member role | automatic, `/rulespanel`, `/welcometest` |
 | **Self-roles**: menus for platforms, games, interests (Creator, AI Enthusiast, Tech Head, Game Dev) and opt-in pings (Events, Challenges, Game Nights, Prompt pings) | `/roles` |
 | **LFG**: clean looking-for-group posts with autocomplete and an optional LFG role ping | `/lfg` |
 | **Events**: announcements with **Going / Maybe** buttons, live counts, and a ping to everyone Going 30 min before start | `/event` |
@@ -20,6 +22,7 @@ Every command works as a **slash command** (`/lfg`) and also with the **`!` pref
 | **Auto voice**: Join-to-Create temporary channels with owner controls | `/vc ...` |
 | **Tickets**: private support channels with claim, close (with optional transcript), add/remove user | `/ticketpanel`, `/ticket`, `/close`, `/claim`, `/adduser`, `/removeuser` |
 | **Fun**: game suggestions, conversation starters, challenges and prompts (optional Grok/xAI) | `/suggest`, `/idea`, `/prompt` |
+| **Server setup**: creates/reuses all channels and roles and saves their IDs; shows the saved config | `/setup` (admin), `/setup-show` (admin) |
 | **Utility** | `/help`, `/ping`, `/schedule-test` (admin), `!sync` (bot owner) |
 
 **Survives restarts.** All buttons and menus keep working after a restart: role menus, tickets, giveaways, event RSVPs and the rules button. Warnings, giveaways, RSVPs, schedules and temporary roles are stored in the database. If the bot was offline when a scheduled post was due, it catches up when it's back, and it never double-posts.
@@ -46,6 +49,7 @@ gaming-discord-bot/
 ├── config.py              # Settings from env vars + EDITABLE role lists and schedule times
 ├── cogs/
 │   ├── general.py         # /help, /ping, !sync
+│   ├── setup.py           # /setup + /setup-show (automatic server setup)
 │   ├── welcome.py         # Welcome message on join
 │   ├── onboarding.py      # /rulespanel + "I accept" button
 │   ├── roles.py           # /roles self-role menus
@@ -59,6 +63,7 @@ gaming-discord-bot/
 │   └── tickets.py         # Ticket system
 ├── utils/
 │   ├── db.py              # SQLite storage + migrations
+│   ├── guildconfig.py     # Per-server channel/role IDs (saved by /setup, env vars as fallback)
 │   ├── content.py         # Picks unused prompts/themes from data/
 │   ├── timeparse.py       # Reads event times like "sat 8pm"
 │   ├── ai.py              # Optional Grok/xAI hook
@@ -69,6 +74,7 @@ gaming-discord-bot/
 │   ├── rss_feeds.json     # Digest feeds (gaming / ai / tech)
 │   ├── rules.md           # Rules text for /rulespanel
 │   └── README.md          # Content file format
+├── tests/                 # python tests/test_setup.py, tests/test_multiserver.py
 ├── requirements.txt
 ├── Procfile               # worker: python main.py
 ├── railway.json           # Start command + restart policy
@@ -94,40 +100,49 @@ gaming-discord-bot/
    - Threads: Create Public Threads, Send Messages in Threads, Manage Threads
    - Voice: Connect, Move Members
    - Use Application Commands, plus Mention Everyone (only so the bot can ping roles that aren't marked mentionable; the bot itself never pings @everyone or @here)
-4. **Important:** in **Server Settings → Roles**, drag the bot's role **above** every role it hands out: the member role, self-roles, Prompt King, Remix Champion and giveaway/LFG roles. It also has to sit above anyone it moderates.
+4. **Important:** in **Server Settings → Roles**, drag the bot's role **above** every role it hands out: the member role, self-roles, Prompt King, Remix Champion and giveaway/LFG roles. It also has to sit above anyone it moderates. Roles that `/setup` creates are placed below the bot automatically, but this step still matters for roles that already exist.
 
 > Already invited the bot with an older link? Open the new link to add the thread permissions. Or, in Server Settings → Roles, give the bot's role **Create Public Threads**, **Send Messages in Threads** and **Manage Threads**.
 
-## 2. Server setup and IDs
+## 2. Set up the server: run `/setup`
 
-1. In Discord, turn on **User Settings → Advanced → Developer Mode**.
-2. Right-click a channel, role, category or the server icon and choose **Copy ID**.
-3. Create what you need and put the IDs in your environment variables. Only `DISCORD_TOKEN` is required; features whose IDs are missing switch off or fall back to the current channel.
+In your server, as an admin, run:
 
-| Create | Variable | Used for |
+```
+/setup dry_run:True     preview: lists what would be created or reused, changes nothing
+/setup                  do it
+/setup-show             see the channel/role IDs saved for this server
+```
+
+`/setup` creates anything that's missing and **reuses** anything that already exists with the same name. It's safe to run again: the second run creates nothing. It never edits or deletes channels or roles that already exist. If something looks wrong, such as a role above the bot or a "private" category that @everyone can see, it tells you instead of changing it.
+
+| What | Created by `/setup` | Used for |
 |---|---|---|
-| Server (right-click its icon) | `GUILD_ID` | Instant slash-command sync |
-| `#welcome` | `WELCOME_CHANNEL_ID` | Welcome messages |
-| `#start-here` | `START_HERE_CHANNEL_ID` | Rules panel + role menus |
-| `#lfg` | `LFG_CHANNEL_ID` | `/lfg` posts |
-| `#events` | `EVENT_CHANNEL_ID` | `/event` posts |
-| `#staff-logs` (private) | `LOG_CHANNEL_ID` | Mod actions and tickets (or split with `MOD_LOG_CHANNEL_ID` / `TICKET_LOG_CHANNEL_ID`) |
-| `#prompt-of-the-day` (text or forum) | `PROMPT_CHANNEL_ID` | Daily prompt + Prompt King |
-| `#digest` | `DIGEST_CHANNEL_ID` | Weekly digest |
-| `#remix-friday` (text or forum) | `CHALLENGE_CHANNEL_ID` | Remix Friday |
-| `TICKETS` category (hidden from @everyone) | `TICKET_CATEGORY_ID` | Ticket channels |
-| `🔊 SQUAD ROOMS` category + `➕ Join to Create` voice channel in it | `VOICE_CATEGORY_ID`, `JOIN_TO_CREATE_CHANNEL_ID` | Temp voice channels |
-| Staff role | `STAFF_ROLE_ID` | Staff-only commands and ticket access |
-| Member role | `MEMBER_ROLE_ID` | Granted by the rules **I accept** button |
-| LFG ping role | `LFG_ROLE_ID` | `/lfg ping_role:True` |
-| Prompt King role | `PROMPT_KING_ROLE_ID` | Given for 24h |
-| Remix Champion role | `REMIX_CHAMPION_ROLE_ID` | Given for 7 days |
+| Roles | **Staff**, **Member**, **Prompt King**, **Remix Champion**, **LFG** | Staff commands and ticket access, rules button, 24h/7-day winner roles, `/lfg` pings |
+| 📁 Server | `#welcome`, `#rules`, `#announcements`, `#self-roles` (read-only for members) | Welcome messages, rules panel, `/event` posts, role menus |
+| 📁 Community | `#general-chat`, `#looking-for-group`, `#giveaways`, `#clips-and-media`, `#bot-commands` | Chat, `/lfg` posts, giveaways, ticket panel |
+| 📁 AI & Create Lab | `#prompt-of-the-day`, `#tech-digest`, `#weekly-challenge`, `#ai-art`, `#tech-talk` | Daily prompt, weekly digest, Remix Friday. Members reply in threads |
+| 📁 Staff (hidden) | `#mod-log` | Mod actions, ticket logs and transcripts |
+| 📁 Tickets (hidden) | (ticket channels appear here) | Private support tickets |
+| 📁 Voice | 🔊 `➕ Join to Create` | Temporary voice channels |
 
-**Ping roles:** `PROMPT_PING_ROLE_ID` and `CHALLENGE_PING_ROLE_ID` are optional. If you leave them empty, the bot pings the self-roles named **Prompt pings** and **Challenges**. Members opt into those in `/roles`, and the bot creates them automatically the first time someone picks them.
+The hidden categories are visible only to **Staff** and the bot. After `/setup`:
+1. Give the **Staff** role to your moderators. For `/timeout` and `/kick`, the role also needs Discord's **Moderate Members** / **Kick Members** permissions.
+2. Run `/rulespanel` in `#rules`, `/roles` in `#self-roles` and `/ticketpanel` in `#bot-commands` (see step 4).
+3. Optional rules gate: deny **View Channels** to @everyone on your main categories and allow it for **Member**. New members then have to click **I accept** in `#rules` to see the server.
 
-**Rules gate:** to make new members accept the rules before seeing the server, deny **View Channels** to @everyone on your main categories and allow it for the member role. Leave `#welcome` and `#start-here` visible to @everyone. Keep `MEMBER_ROLE_ON_JOIN=false`.
+**Ping roles** (Events, Challenges, Game Nights, Prompt pings) aren't created up front. Members opt into them in `/roles`, the bot creates each one the first time someone picks it, and the scheduler pings **Prompt pings** / **Challenges** automatically.
 
-Every other setting is listed with a comment in [`.env.example`](.env.example).
+### Moving to another server (or adding one)
+
+1. Invite the bot to the new server with the link from step 1.
+2. Run `/setup` there.
+
+That's it. Slash commands appear in each server the bot joins automatically, scheduled posts go out in every server that has the channels configured, and each server keeps its own settings. To leave the old server, kick the bot from it. For this multi-server mode, leave `GUILD_ID` **empty** in Railway: when `GUILD_ID` is set, slash commands only sync to that one server.
+
+### Advanced: configure with env vars instead
+
+You can still set channel/role IDs as env vars (see [`.env.example`](.env.example)), for example to point the bot at existing channels with different names. IDs saved by `/setup` always win. Env-var IDs only apply to the **home** server: the one in `GUILD_ID`, or every server when `GUILD_ID` is empty. To find an ID, turn on **User Settings → Advanced → Developer Mode**, then right-click the channel/role and choose **Copy ID**. The optional `PROMPT_PING_ROLE_ID` / `CHALLENGE_PING_ROLE_ID` override the ping roles named above.
 
 ### Editing content
 
@@ -149,18 +164,20 @@ After changing anything in `config.py` or `data/`, push to GitHub. Railway redep
    - Set the **mount path** to **`/data`**.
    - The bot stores its database at `/data/bot.db` automatically. You can also set `DB_PATH=/data/bot.db` yourself.
    - ⚠️ **Don't** mount the volume at `/app/data`. That would hide the bundled prompts, themes and rules.
-3. Open the service's **Variables** tab. Click **Raw Editor** and paste your settings: at minimum `DISCORD_TOKEN` and `GUILD_ID`, plus the IDs from step 2.
+3. Open the service's **Variables** tab and add **`DISCORD_TOKEN`**. That's the only required variable. Channel and role IDs come from `/setup`. Leave `GUILD_ID` empty to use the bot in any server, or set it to limit slash commands to one server.
 4. Railway installs `requirements.txt` and starts `python main.py` (from `railway.json`, with `Procfile` as a backup). The bot doesn't need a public domain or port.
 5. Check **Deployments → View Logs**. A healthy start looks like:
    ```
    [INFO] bot.db: Database ready at /data/bot.db
    [INFO] bot: Loaded cog: cogs.schedule
-   [INFO] bot: Synced 24 slash commands to guild 123...
+   [INFO] bot.guildconfig: Loaded saved config for 1 server(s)
+   [INFO] bot: Synced 26 slash commands to guild 123...
    [INFO] bot: Logged in as YourBot#1234
    [INFO] bot.schedule: Scheduler started (timezone America/New_York)
    ```
    If you see `No Railway volume attached`, go back to step 2.
 6. **Restart:** use **Deployments → ⋮ → Restart**. Every push to `main` redeploys, and the restart policy brings the bot back if it crashes.
+7. In Discord, run **`/setup`** (step 2).
 
 ### Run locally (optional)
 
@@ -169,16 +186,18 @@ git clone https://github.com/Dropsx1/gaming-discord-bot.git
 cd gaming-discord-bot
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env    # fill in DISCORD_TOKEN, GUILD_ID, ...
+cp .env.example .env    # fill in DISCORD_TOKEN (everything else is optional)
 python main.py          # database goes to ./data/bot.db
+python tests/test_setup.py && python tests/test_multiserver.py   # offline tests, no token needed
 ```
 
 ## 4. First-time setup in Discord (staff)
 
 ```
-/rulespanel        in #start-here: rules + "I accept" button
-/roles             in #start-here: self-role menus
-/ticketpanel       in #support: "Open Ticket" button
+/setup             creates/reuses every channel and role (step 2)
+/rulespanel        in #rules: rules + "I accept" button
+/roles             in #self-roles: self-role menus
+/ticketpanel       in #bot-commands: "Open Ticket" button
 /welcometest       preview the welcome message
 ```
 
@@ -247,14 +266,16 @@ Members click **🎫 Open Ticket** or use `/ticket`. Inside a ticket:
 | `PrivilegedIntentsRequired` | Enable the Server Members and Message Content intents in the Developer Portal |
 | `No Railway volume attached` in logs | Add a volume mounted at `/data` (Deploy step 2) |
 | `data/prompts.json is missing` | The volume is mounted at `/app/data`; change the mount path to `/data` |
-| Slash commands don't appear | Set `GUILD_ID`, invite with the `applications.commands` scope, restart Discord (Ctrl+R) |
+| Slash commands don't appear | Invite with the `applications.commands` scope and restart Discord (Ctrl+R). If `GUILD_ID` is set to a different server, clear it. The owner can also type `!sync` in the server |
+| `/setup` says it's missing permissions | Give the bot's role **Manage Roles** and **Manage Channels**, or re-invite it with the link in step 1 |
+| A feature says it isn't configured | Run `/setup` (it only adds what's missing), then check `/setup-show` |
 | "My role needs to be above these roles" | Move the bot's role higher in Server Settings → Roles |
 | Posted, but no thread / "couldn't create a thread" | Give the bot Create Public Threads + Send Messages in Threads in that channel |
 | Role ping shows but doesn't notify | Make the role mentionable, or keep the bot's Mention Everyone permission |
-| Prompt or Remix didn't post | Check that the channel ID is set and look for `Job prompt:` / `Job remix_kickoff:` in the logs. Try `/schedule-test` |
+| Prompt or Remix didn't post | Check `/setup-show` lists `PROMPT_CHANNEL_ID` / `CHALLENGE_CHANNEL_ID`, and look for `Job prompt` / `Job remix_kickoff` in the logs. Try `/schedule-test` |
 | Digest says a feed couldn't be loaded | That site was down or changed its feed URL; edit `data/rss_feeds.json` |
-| New members can't see anything after accepting | Allow View Channels for the member role on your categories, and check `MEMBER_ROLE_ID` |
-| Duplicate slash commands | Commands were once synced globally too. Keep `GUILD_ID` set; the global copies expire, or re-invite the bot |
+| New members can't see anything after accepting | Allow View Channels for the **Member** role on your categories, and check `/setup-show` lists `MEMBER_ROLE_ID` |
+| Duplicate slash commands | Commands were once synced globally too. The global copies expire, or re-invite the bot |
 | `PyNaCl is not installed` warning | Safe to ignore. The bot doesn't play audio |
 
 ## License

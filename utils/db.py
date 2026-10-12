@@ -137,6 +137,16 @@ MIGRATIONS: list[list[str]] = [
             PRIMARY KEY (message_id, user_id)
         )""",
     ],
+    # v5: per-server channel/role IDs saved by /setup
+    [
+        """CREATE TABLE guild_config (
+            guild_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, key)
+        )""",
+    ],
 ]
 
 

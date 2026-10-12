@@ -15,6 +15,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from utils import guildconfig as gc
 from utils.helpers import trim
 
 logger = logging.getLogger("bot.voice")
@@ -47,12 +48,13 @@ class Voice(commands.Cog):
 
     # ------------------------------------------------------------------ helpers
     def get_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
-        if config.VOICE_CATEGORY_ID:
-            cat = guild.get_channel(config.VOICE_CATEGORY_ID)
+        cat_id = gc.get(guild, "VOICE_CATEGORY_ID")
+        if cat_id:
+            cat = guild.get_channel(cat_id)
             if isinstance(cat, discord.CategoryChannel):
                 return cat
-            logger.warning("VOICE_CATEGORY_ID %s is not a category", config.VOICE_CATEGORY_ID)
-        jtc = guild.get_channel(config.JOIN_TO_CREATE_CHANNEL_ID)
+            logger.warning("VOICE_CATEGORY_ID %s is not a category", cat_id)
+        jtc = gc.channel(guild, "JOIN_TO_CREATE_CHANNEL_ID")
         return jtc.category if jtc else None
 
     def owned_channel(self, member: discord.Member) -> Optional[discord.VoiceChannel]:
@@ -79,14 +81,15 @@ class Voice(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         """Rebuild temp-channel ownership after a restart and clean up empty ones."""
-        if not config.JOIN_TO_CREATE_CHANNEL_ID:
-            return
         for guild in self.bot.guilds:
+            jtc_id = gc.get(guild, "JOIN_TO_CREATE_CHANNEL_ID")
+            if not jtc_id:
+                continue
             category = self.get_category(guild)
             if not category:
                 continue
             for channel in category.voice_channels:
-                if channel.id == config.JOIN_TO_CREATE_CHANNEL_ID:
+                if channel.id == jtc_id:
                     continue
                 owner = find_owner_from_overwrites(channel)
                 if owner is None:
@@ -99,7 +102,7 @@ class Voice(commands.Cog):
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         if before.channel == after.channel:
             return  # mute/deafen/etc.
-        if after.channel and after.channel.id == config.JOIN_TO_CREATE_CHANNEL_ID and not member.bot:
+        if after.channel and after.channel.id == gc.get(member.guild, "JOIN_TO_CREATE_CHANNEL_ID") and not member.bot:
             await self.create_temp_channel(member)
         if isinstance(before.channel, discord.VoiceChannel):
             await self.delete_if_empty(before.channel)
@@ -176,7 +179,8 @@ class Voice(commands.Cog):
         voice = ctx.author.voice
         channel = voice.channel if voice else None
         if not channel or channel.id not in self.temp_channels:
-            jtc = f"<#{config.JOIN_TO_CREATE_CHANNEL_ID}>" if config.JOIN_TO_CREATE_CHANNEL_ID else "Join to Create"
+            jtc_id = gc.get(ctx.guild, "JOIN_TO_CREATE_CHANNEL_ID")
+            jtc = f"<#{jtc_id}>" if jtc_id else "Join to Create"
             await ctx.send(f"Join {jtc} to get your own voice channel, then use `/vc` to control it.", ephemeral=True)
             return
         owner = ctx.guild.get_member(self.temp_channels[channel.id])

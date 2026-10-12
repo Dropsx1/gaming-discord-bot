@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import config
+from utils import guildconfig as gc
 from utils.helpers import trim
 
 logger = logging.getLogger("bot.onboarding")
@@ -36,11 +36,11 @@ class RulesView(discord.ui.View):
     @discord.ui.button(label="I accept the rules", style=discord.ButtonStyle.green, emoji="✅", custom_id="rules:accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user
-        role = interaction.guild.get_role(config.MEMBER_ROLE_ID) if config.MEMBER_ROLE_ID else None
+        role = gc.role(interaction.guild, "MEMBER_ROLE_ID")
         if role is None:
             logger.warning("Rules accepted by %s but MEMBER_ROLE_ID is not set or not found", member)
             await interaction.response.send_message(
-                "Thanks for accepting! (Staff: set `MEMBER_ROLE_ID` so this button can unlock the server.)",
+                "Thanks for accepting! (Staff: run `/setup` so this button can grant the Member role.)",
                 ephemeral=True,
             )
             return
@@ -57,7 +57,7 @@ class RulesView(discord.ui.View):
             return
         logger.info("%s accepted the rules", member)
         roles_hint = (
-            f" Next, grab your roles in <#{config.START_HERE_CHANNEL_ID}>." if config.START_HERE_CHANNEL_ID else ""
+            f" Next, grab your roles in <#{roles_id}>." if (roles_id := gc.get(interaction.guild, "SELF_ROLES_CHANNEL_ID")) else ""
         )
         await interaction.response.send_message(f"✅ Welcome in, {member.mention}! The server is unlocked.{roles_hint}",
                                                 ephemeral=True)
@@ -80,8 +80,8 @@ class Onboarding(commands.Cog):
             await ctx.send(f"⚠️ Couldn't read data/rules.md: {e}", ephemeral=True)
             return
         embed = discord.Embed(title=trim(title, 256), description=trim(body, 4096), color=discord.Color.green())
-        if not config.MEMBER_ROLE_ID:
-            await ctx.send("⚠️ Heads up: `MEMBER_ROLE_ID` isn't set, so the button won't grant a role yet.", ephemeral=True)
+        if not gc.get(ctx.guild, "MEMBER_ROLE_ID"):
+            await ctx.send("⚠️ Heads up: no Member role is configured (run `/setup`), so the button won't grant a role yet.", ephemeral=True)
         await ctx.channel.send(embed=embed, view=RulesView())
         if ctx.interaction:
             await ctx.send("✅ Rules panel posted.", ephemeral=True)

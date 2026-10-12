@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from utils import guildconfig as gc
 from utils.helpers import autocomplete_from, trim
 
 logger = logging.getLogger("bot.lfg")
@@ -38,7 +39,7 @@ class LFG(commands.Cog):
         ping_role: bool = False,
     ):
         """Prefix usage: !lfg "Valorant" NA PC "Gold 2" "need 2 for ranked" yes"""
-        channel = ctx.guild.get_channel(config.LFG_CHANNEL_ID) if config.LFG_CHANNEL_ID else None
+        channel = gc.channel(ctx.guild, "LFG_CHANNEL_ID")
         if not isinstance(channel, discord.TextChannel):
             channel = ctx.channel
 
@@ -58,8 +59,8 @@ class LFG(commands.Cog):
         embed.timestamp = discord.utils.utcnow()
 
         content = None
-        if ping_role and config.LFG_ROLE_ID:
-            role = ctx.guild.get_role(config.LFG_ROLE_ID)
+        if ping_role:
+            role = gc.role(ctx.guild, "LFG_ROLE_ID")
             if role:
                 content = role.mention
 

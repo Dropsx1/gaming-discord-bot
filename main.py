@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from utils import guildconfig
 from utils.db import Database
 
 logging.basicConfig(
@@ -17,6 +18,7 @@ logger = logging.getLogger("bot")
 
 COGS = [
     "cogs.general",
+    "cogs.setup",
     "cogs.welcome",
     "cogs.onboarding",
     "cogs.lfg",
@@ -55,6 +57,8 @@ class GamingBot(commands.Bot):
     async def setup_hook(self):
         self.add_check(self._guild_only)
         await self.db.connect()  # before cogs, so they can use self.bot.db
+        await guildconfig.init(self.db)  # per-server IDs saved by /setup
+        self._synced_guilds: set[int] = set()
 
         for cog in COGS:
             try:
@@ -65,18 +69,27 @@ class GamingBot(commands.Bot):
 
         if not config.SYNC_COMMANDS:
             logger.info("SYNC_COMMANDS is off; skipping slash command sync")
-            return
+        elif config.GUILD_ID:
+            await self.sync_guild(config.GUILD_ID)
+        # Without GUILD_ID, commands are synced to every server in on_ready / on_guild_join.
+
+    async def sync_guild(self, guild_id: int) -> int:
+        """Instantly sync slash commands to one server. Returns how many were synced."""
+        guild = discord.Object(id=guild_id)
         try:
-            if config.GUILD_ID:
-                guild = discord.Object(id=config.GUILD_ID)
-                self.tree.copy_global_to(guild=guild)
-                synced = await self.tree.sync(guild=guild)
-                logger.info("Synced %d slash commands to guild %s", len(synced), config.GUILD_ID)
-            else:
-                synced = await self.tree.sync()
-                logger.info("Synced %d global slash commands (can take up to an hour to appear)", len(synced))
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
         except discord.HTTPException:
-            logger.exception("Slash command sync failed")
+            logger.exception("Slash command sync failed for guild %s", guild_id)
+            return 0
+        self._synced_guilds.add(guild_id)
+        logger.info("Synced %d slash commands to guild %s", len(synced), guild_id)
+        return len(synced)
+
+    async def on_guild_join(self, guild: discord.Guild):
+        logger.info("Joined new server: %s (%s). Run /setup there to configure it.", guild.name, guild.id)
+        if config.SYNC_COMMANDS and not config.GUILD_ID:
+            await self.sync_guild(guild.id)
 
     async def close(self):
         await super().close()
@@ -91,6 +104,10 @@ class GamingBot(commands.Bot):
     async def on_ready(self):
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
         logger.info("Connected to %d guild(s): %s", len(self.guilds), ", ".join(g.name for g in self.guilds))
+        if config.SYNC_COMMANDS and not config.GUILD_ID:
+            for guild in self.guilds:  # on_ready can repeat after reconnects; sync each server once
+                if guild.id not in self._synced_guilds:
+                    await self.sync_guild(guild.id)
         if config.GUILD_ID and not self.get_guild(config.GUILD_ID):
             logger.warning("GUILD_ID %s is set but the bot is not in that server", config.GUILD_ID)
 

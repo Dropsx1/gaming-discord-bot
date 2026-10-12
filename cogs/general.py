@@ -40,15 +40,10 @@ class General(commands.Cog):
     @commands.command(name="sync", hidden=True)
     @commands.is_owner()
     async def sync(self, ctx: commands.Context):
-        """Owner-only: re-sync slash commands (prefix only, e.g. `!sync`)."""
-        if config.GUILD_ID:
-            guild = discord.Object(id=config.GUILD_ID)
-            self.bot.tree.copy_global_to(guild=guild)
-            synced = await self.bot.tree.sync(guild=guild)
-        else:
-            synced = await self.bot.tree.sync()
-        logger.info("Manual sync by %s: %d commands", ctx.author, len(synced))
-        await ctx.send(f"✅ Synced {len(synced)} slash commands.")
+        """Owner-only: re-sync slash commands to this server (prefix only, e.g. `!sync`)."""
+        count = await self.bot.sync_guild(ctx.guild.id)
+        logger.info("Manual sync by %s in %s: %d commands", ctx.author, ctx.guild, count)
+        await ctx.send(f"✅ Synced {count} slash commands to this server.")
 
 
 async def setup(bot: commands.Bot):

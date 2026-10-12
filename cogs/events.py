@@ -15,6 +15,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
+from utils import guildconfig as gc
 from utils.db import now
 from utils.helpers import is_staff, trim
 from utils.timeparse import TZ, parse_when
@@ -256,7 +257,7 @@ class Events(commands.Cog):
             await ctx.send("Pinging @everyone isn't allowed here. Use a role instead.", ephemeral=True)
             return
 
-        channel = ctx.guild.get_channel(config.EVENT_CHANNEL_ID) if config.EVENT_CHANNEL_ID else None
+        channel = gc.channel(ctx.guild, "EVENT_CHANNEL_ID")
         if not isinstance(channel, discord.TextChannel):
             channel = ctx.channel
 

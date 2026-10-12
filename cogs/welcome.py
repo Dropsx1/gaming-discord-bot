@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from utils import guildconfig as gc
 
 logger = logging.getLogger("bot.welcome")
 
@@ -16,14 +17,19 @@ class Welcome(commands.Cog):
         self.bot = bot
 
     def build_embed(self, member: discord.Member) -> discord.Embed:
-        start_here = f"<#{config.START_HERE_CHANNEL_ID}>" if config.START_HERE_CHANNEL_ID else "#start-here"
-        lfg = f"<#{config.LFG_CHANNEL_ID}>" if config.LFG_CHANNEL_ID else "the LFG channel"
+        def link(key: str, fallback: str) -> str:
+            cid = gc.get(member.guild, key)
+            return f"<#{cid}>" if cid else fallback
+
+        start_here = link("START_HERE_CHANNEL_ID", "#start-here")
+        roles_ch = link("SELF_ROLES_CHANNEL_ID", "")
+        lfg = link("LFG_CHANNEL_ID", "the LFG channel")
         embed = discord.Embed(
             title=f"Welcome to {member.guild.name}, {member.display_name}! 🎮",
             description=(
                 f"Hey {member.mention}, glad you made it!\n\n"
                 f"📌 **Start here:** head to {start_here}, read the rules and click **I accept** to unlock the server.\n"
-                f"🎭 **Roles:** pick your platforms, games and interests, plus pings for events and challenges.\n"
+                f"🎭 **Roles:** pick your platforms, games and interests{' in ' + roles_ch if roles_ch else ''}, plus pings for events and challenges.\n"
                 f"🤝 **LFG:** use `/lfg` in {lfg} to find teammates, or hop into a voice channel.\n\n"
                 f"Have fun and keep it chill. GG!"
             ),
@@ -40,21 +46,23 @@ class Welcome(commands.Cog):
         logger.info("Member joined: %s (%s) in %s", member, member.id, member.guild)
 
         # With the rules button (/rulespanel) the member role is earned there instead.
-        if config.MEMBER_ROLE_ON_JOIN and config.MEMBER_ROLE_ID:
-            role = member.guild.get_role(config.MEMBER_ROLE_ID)
+        member_role_id = gc.get(member.guild, "MEMBER_ROLE_ID")
+        if config.MEMBER_ROLE_ON_JOIN and member_role_id:
+            role = member.guild.get_role(member_role_id)
             if role:
                 try:
                     await member.add_roles(role, reason="Auto member role")
                 except discord.HTTPException as e:
                     logger.warning("Could not give member role to %s: %s", member, e)
             else:
-                logger.warning("MEMBER_ROLE_ID %s not found", config.MEMBER_ROLE_ID)
+                logger.warning("MEMBER_ROLE_ID %s not found", member_role_id)
 
-        if not config.WELCOME_CHANNEL_ID:
+        welcome_id = gc.get(member.guild, "WELCOME_CHANNEL_ID")
+        if not welcome_id:
             return
-        channel = member.guild.get_channel(config.WELCOME_CHANNEL_ID)
+        channel = member.guild.get_channel(welcome_id)
         if not isinstance(channel, discord.abc.Messageable):
-            logger.warning("Welcome channel %s not found", config.WELCOME_CHANNEL_ID)
+            logger.warning("Welcome channel %s not found", welcome_id)
             return
         try:
             await channel.send(content=member.mention, embed=self.build_embed(member))

@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import config
+from utils import guildconfig as gc
 from utils.helpers import human, parse_duration, send_log, trim
 
 logger = logging.getLogger("bot.moderation")
@@ -67,7 +67,7 @@ class Moderation(commands.Cog):
         embed = self.mod_embed("⚠️ Warning Issued", discord.Color.orange(), ctx, member, reason)
         embed.add_field(name="Total warnings", value=str(total), inline=True)
         embed.set_footer(text=f"Warn ID {warn_id} • " + ("DM delivered" if dm_ok else "DM failed (closed DMs)"))
-        await send_log(ctx.guild, config.MOD_LOG_CHANNEL_ID, embed)
+        await send_log(ctx.guild, gc.get(ctx.guild, "MOD_LOG_CHANNEL_ID"), embed)
         logger.info("%s warned %s (#%d, id %d): %s", ctx.author, member, total, warn_id, reason)
         await ctx.send(f"⚠️ {member.mention} has been warned. They now have **{total}** warning(s).", ephemeral=True)
 
@@ -115,7 +115,7 @@ class Moderation(commands.Cog):
 
         embed = self.mod_embed("🔇 Member Timed Out", discord.Color.dark_orange(), ctx, member, reason)
         embed.add_field(name="Duration", value=human(delta), inline=True)
-        await send_log(ctx.guild, config.MOD_LOG_CHANNEL_ID, embed)
+        await send_log(ctx.guild, gc.get(ctx.guild, "MOD_LOG_CHANNEL_ID"), embed)
         logger.info("%s timed out %s for %s: %s", ctx.author, member, human(delta), reason)
         await ctx.send(f"🔇 {member.mention} has been timed out for **{human(delta)}**.", ephemeral=True)
 
@@ -130,7 +130,7 @@ class Moderation(commands.Cog):
             return
         await member.timeout(None, reason=f"{ctx.author}: {reason}")
         embed = self.mod_embed("🔊 Timeout Removed", discord.Color.green(), ctx, member, reason)
-        await send_log(ctx.guild, config.MOD_LOG_CHANNEL_ID, embed)
+        await send_log(ctx.guild, gc.get(ctx.guild, "MOD_LOG_CHANNEL_ID"), embed)
         logger.info("%s removed timeout for %s", ctx.author, member)
         await ctx.send(f"🔊 {member.mention}'s timeout was removed.", ephemeral=True)
 
@@ -148,7 +148,7 @@ class Moderation(commands.Cog):
         await member.kick(reason=f"{ctx.author}: {reason}")
 
         embed = self.mod_embed("👢 Member Kicked", discord.Color.red(), ctx, member, reason)
-        await send_log(ctx.guild, config.MOD_LOG_CHANNEL_ID, embed)
+        await send_log(ctx.guild, gc.get(ctx.guild, "MOD_LOG_CHANNEL_ID"), embed)
         logger.info("%s kicked %s: %s", ctx.author, member, reason)
         await ctx.send(f"👢 **{member}** has been kicked.", ephemeral=True)
 
