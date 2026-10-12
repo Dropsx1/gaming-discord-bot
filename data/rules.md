@@ -1,4 +1,4 @@
-# 📜 Universal Play Haven Rules
+# 📜 {server} Rules
 
 1. **Be kind.** No harassment, hate speech, slurs, or personal attacks.
 2. **Keep it SFW.** No NSFW, gore, or shock content anywhere, including avatars and names.

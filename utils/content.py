@@ -7,7 +7,8 @@
 Items are picked at random from the ones not used yet. Once every item has
 been used, the rotation resets (without repeating the one just posted).
 Edit the JSON files to add or change items; keep each `id` unique and never
-reuse an old id for different text.
+reuse an old id for different text. Write {server} anywhere to insert the
+name of the server the item is posted in.
 """
 
 import json
@@ -55,6 +56,19 @@ def load_feeds() -> dict[str, list[str]]:
     with (DATA_DIR / "rss_feeds.json").open(encoding="utf-8") as f:
         raw = json.load(f)
     return {cat: [u for u in urls if isinstance(u, str) and u.startswith("http")] for cat, urls in raw.items()}
+
+
+SERVER_PLACEHOLDER = "{server}"
+
+
+def render(text: str, server_name: str) -> str:
+    """Fill in {server} with the server's name (plain replace, so other braces are left alone)."""
+    return text.replace(SERVER_PLACEHOLDER, server_name)
+
+
+def render_item(item: dict, server_name: str) -> dict:
+    """Copy of a content item with {server} filled in for every text field."""
+    return {k: render(v, server_name) if isinstance(v, str) else v for k, v in item.items()}
 
 
 async def pick_unused(db, kind: str) -> dict:

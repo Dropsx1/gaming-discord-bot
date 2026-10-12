@@ -1,4 +1,6 @@
-# Universal Play Haven bot content
+# Bot content
+
+Write `{server}` in any prompt, Remix theme or `rules.md` to insert the name of the server it is posted in.
 
 Note for Claude Code: place these files in the repo's `data/` folder.
 

@@ -193,7 +193,7 @@ class Schedule(commands.Cog):
             if not force:
                 await self.db.mark_job("prompt", key)  # before posting: a failure must not retry every 10 min
 
-            item = await content.pick_unused(self.db, content.PROMPTS)
+            item = content.render_item(await content.pick_unused(self.db, content.PROMPTS), guild.name)
             day = local_now().strftime("%b %-d")
             embed = discord.Embed(title="💬 Prompt of the Day", description=item["text"], color=discord.Color.teal())
             embed.add_field(
@@ -279,7 +279,7 @@ class Schedule(commands.Cog):
             if not force:
                 await self.db.mark_job("remix_kickoff", key)
 
-            item = await content.pick_unused(self.db, content.REMIX)
+            item = content.render_item(await content.pick_unused(self.db, content.REMIX), guild.name)
             opens = local_now()
             closes = next_deadline(opens)
             ts = int(closes.timestamp())

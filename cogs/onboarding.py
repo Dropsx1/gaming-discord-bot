@@ -1,6 +1,7 @@
 """Rules panel with an "I accept" button that grants MEMBER_ROLE_ID.
 
-Edit the rules in data/rules.md (the first "# " line becomes the title), then
+Edit the rules in data/rules.md (the first "# " line becomes the title, and {server}
+is replaced with the server's name), then
 run /rulespanel in your #start-here or #rules channel. The button is a
 persistent view, so it keeps working after restarts.
 """
@@ -13,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils import guildconfig as gc
+from utils.content import render
 from utils.helpers import trim
 
 logger = logging.getLogger("bot.onboarding")
@@ -20,9 +22,9 @@ logger = logging.getLogger("bot.onboarding")
 RULES_FILE = Path(__file__).resolve().parent.parent / "data" / "rules.md"
 
 
-def load_rules() -> tuple[str, str]:
-    """Return (title, body) from data/rules.md."""
-    text = RULES_FILE.read_text(encoding="utf-8").strip()
+def load_rules(server_name: str = "this server") -> tuple[str, str]:
+    """Return (title, body) from data/rules.md, with {server} filled in."""
+    text = render(RULES_FILE.read_text(encoding="utf-8").strip(), server_name)
     lines = text.splitlines()
     if lines and lines[0].startswith("# "):
         return lines[0][2:].strip(), "\n".join(lines[1:]).strip()
@@ -75,7 +77,7 @@ class Onboarding(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def rulespanel(self, ctx: commands.Context):
         try:
-            title, body = load_rules()
+            title, body = load_rules(ctx.guild.name)
         except OSError as e:
             await ctx.send(f"⚠️ Couldn't read data/rules.md: {e}", ephemeral=True)
             return

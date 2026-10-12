@@ -157,6 +157,7 @@ You can still set channel/role IDs as env vars (see [`.env.example`](.env.exampl
 | Prompts / Remix themes | `data/prompts.json`, `data/remix_themes.json`. Keep every `id` unique. Items are picked at random from the unused ones; the rotation resets once every item has been used |
 | Digest feeds | `data/rss_feeds.json` (the newest 3 headlines per feed) |
 | Rules text | `data/rules.md`. Run `/rulespanel` again after editing |
+| Server name in text | Write `{server}` in `rules.md`, a prompt or a Remix theme. The bot fills in the name of the server it's posting in (e.g. "📜 {server} Rules" → "📜 Nexus Arcade Rules") |
 
 After changing anything in `config.py` or `data/`, push to GitHub. Railway redeploys automatically.
 

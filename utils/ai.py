@@ -26,7 +26,7 @@ TIMEOUT = aiohttp.ClientTimeout(total=20)
 MAX_TOKENS = int(os.getenv("XAI_MAX_TOKENS", "300") or 300)
 
 DEFAULT_SYSTEM = (
-    "You write for Universal Play Haven, a friendly, safe-for-work gaming Discord server. "
+    "You write for a friendly, safe-for-work gaming Discord server. "
     "Keep replies short, upbeat and inclusive. No NSFW content, slurs, harassment, politics, "
     "or real-money gambling. Never use @everyone or @here. Plain text only: no preamble, "
     "no quotation marks around the answer."
