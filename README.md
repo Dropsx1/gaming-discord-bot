@@ -22,7 +22,7 @@ Every command works as a **slash command** (`/lfg`) and also with the **`!` pref
 | **Auto voice**: Join-to-Create temporary channels with owner controls | `/vc ...` |
 | **Tickets**: private support channels with claim, close (with optional transcript), add/remove user | `/ticketpanel`, `/ticket`, `/close`, `/claim`, `/adduser`, `/removeuser` |
 | **Fun**: game suggestions, conversation starters, challenges and prompts (optional Grok/xAI) | `/suggest`, `/idea`, `/prompt` |
-| **Server setup**: creates/reuses all channels and roles and saves their IDs; use existing roles instead; show the saved config | `/setup`, `/setup-role`, `/setup-show` (admin) |
+| **Server setup**: creates/reuses all channels and roles and saves their IDs; link existing channels/roles by hand; show the saved config | `/setup`, `/setup-link`, `/setup-role`, `/setup-show` (admin) |
 | **Utility** | `/help`, `/ping`, `/schedule-test` (admin), `!sync` (bot owner) |
 
 **Survives restarts.** All buttons and menus keep working after a restart: role menus, tickets, giveaways, event RSVPs and the rules button. Warnings, giveaways, RSVPs, schedules and temporary roles are stored in the database. If the bot was offline when a scheduled post was due, it catches up when it's back, and it never double-posts.
@@ -114,11 +114,16 @@ In your server, as an admin, run:
 /setup-show             see the channel/role IDs saved for this server
 /setup-role setting:Member (I accept button) role:@Verified
                         use an existing role instead of the one /setup made
+/setup-link key:Prompt of the Day channel channel:#daily-prompt
+/setup-link key:Member role role:@Verified
+                        point ANY setting at an existing channel, category or role
 ```
+
+`/setup-link` covers every setting `/setup` knows (channels, categories, roles, log channels, ping roles). Start typing in `key` and pick from the list, or use the name, e.g. `PROMPT_CHANNEL_ID` / `member_role`. It checks the target is the right kind (text, voice, category or role), and the same role safety rules as `/setup-role` apply.
 
 `/setup-role` points any of the bot's roles (Member, Staff, Prompt King, Remix Champion, the ping roles) at a role you already have, and takes effect immediately. Roles the bot hands out (Member, Prompt King, Remix Champion) must sit below the bot's role and can't carry moderator permissions, since anyone who qualifies gets them.
 
-`/setup` creates anything that's missing and **reuses** anything that already exists with the same name. It's safe to run again: the second run creates nothing. It never edits or deletes channels or roles that already exist. If something looks wrong, such as a role above the bot or a "private" category that @everyone can see, it tells you instead of changing it.
+`/setup` creates anything that's missing and **reuses** anything that already exists with the same name. Names are compared without emoji, dividers or capitals, so a hand-made `📅┃prompt-of-the-day` or `#📖〢「rules` counts as `prompt-of-the-day` / `rules`, in any category. It finds everything that exists *before* creating anything, so if Discord rate-limits it, only items that are truly missing wait. It's safe to run again: the second run creates nothing. It never edits or deletes channels or roles that already exist. If something looks wrong, such as a role above the bot or a "private" category that @everyone can see, it tells you instead of changing it.
 
 | What | Created by `/setup` | Used for |
 |---|---|---|

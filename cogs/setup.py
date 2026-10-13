@@ -8,6 +8,7 @@ reused and never modified; only items it creates get permissions set.
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -18,6 +19,7 @@ from discord.ext import commands
 
 from utils import guildconfig as gc
 from utils.helpers import trim
+from utils.names import normalize_name
 
 logger = logging.getLogger("bot.setup")
 
@@ -91,7 +93,15 @@ FORUM_OK = {"PROMPT_CHANNEL_ID", "CHALLENGE_CHANNEL_ID"}
 
 
 def _norm(name: str) -> str:
-    return name.casefold().strip()
+    return normalize_name(name)
+
+
+def _reason(error: discord.HTTPException) -> str:
+    """Short, readable reason for a failed Discord call."""
+    text = (getattr(error, "text", "") or "").strip()
+    if getattr(error, "status", None) == 403:
+        return "I'm missing permission for this" + (f" ({text})" if text else "")
+    return f"{error.__class__.__name__}" + (f": {text}" if text else "")
 
 
 class Report:
@@ -115,6 +125,8 @@ class SetupRunner:
         self.report = Report()
         self.reason = "Bot /setup"
         self.waiting_keys: set[str] = set()  # roles/categories postponed by a rate limit
+        self.matched: dict[str, object] = {}  # key -> existing role/category/channel found by match_existing()
+        self._claimed: set[int] = set()       # IDs already matched, so one item never serves two keys
 
     # ---------------------------------------------------------- rate limits
     def _limited(self) -> bool:
@@ -132,17 +144,33 @@ class SetupRunner:
     def _saved(self, key: str) -> int:
         return gc.get(self.guild, key)
 
+    def _best(self, candidates: list, spec_name: str, category=None):
+        """Pick among same-name matches: exact name first, then already in the target category, then top-most."""
+        candidates = [c for c in candidates if c.id not in self._claimed]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: (
+            0 if c.name.casefold() == spec_name.casefold() else 1,
+            0 if category is not None and getattr(c, "category_id", None) == category.id else 1,
+            getattr(c, "position", 0),
+        ))
+        return candidates[0]
+
     def find_role(self, spec: RoleSpec) -> Optional[discord.Role]:
         role = self.guild.get_role(self._saved(spec.key)) if self._saved(spec.key) else None
-        if role is None:
-            role = discord.utils.find(lambda r: _norm(r.name) == _norm(spec.name), self.guild.roles)
-        return role if role is not None and not role.is_default() else None
+        if role is not None and not role.is_default() and role.id not in self._claimed:
+            return role
+        target = _norm(spec.name)
+        matches = [r for r in self.guild.roles
+                   if not r.is_default() and not getattr(r, "managed", False) and _norm(r.name) == target]
+        return self._best(matches, spec.name)
 
     def find_category(self, spec: CategorySpec) -> Optional[discord.CategoryChannel]:
         ch = self.guild.get_channel(self._saved(spec.key)) if self._saved(spec.key) else None
-        if isinstance(ch, discord.CategoryChannel):
+        if isinstance(ch, discord.CategoryChannel) and ch.id not in self._claimed:
             return ch
-        return discord.utils.find(lambda c: _norm(c.name) == _norm(spec.name), self.guild.categories)
+        target = _norm(spec.name)
+        return self._best([c for c in self.guild.categories if _norm(c.name) == target], spec.name)
 
     def _type_ok(self, ch, spec: ChannelSpec) -> bool:
         if spec.voice:
@@ -152,13 +180,48 @@ class SetupRunner:
         return isinstance(ch, discord.TextChannel)
 
     def find_channel(self, spec: ChannelSpec, category: Optional[discord.CategoryChannel]):
+        """Saved ID first, then a same-name channel anywhere in the server (any category)."""
         ch = self.guild.get_channel(self._saved(spec.key)) if self._saved(spec.key) else None
-        if ch is not None and self._type_ok(ch, spec):
+        if ch is not None and self._type_ok(ch, spec) and ch.id not in self._claimed:
             return ch
-        matches = [c for c in self.guild.channels if self._type_ok(c, spec) and _norm(c.name) == _norm(spec.name)]
-        # Prefer one already in the target category.
-        matches.sort(key=lambda c: 0 if category is not None and c.category_id == category.id else 1)
-        return matches[0] if matches else None
+        target = _norm(spec.name)
+        matches = [c for c in self.guild.channels if self._type_ok(c, spec) and _norm(c.name) == target]
+        return self._best(matches, spec.name, category)
+
+    def _reuse(self, key: str, item, label: str) -> None:
+        self.matched[key] = item
+        self._claimed.add(item.id)
+        self.report.reused.append(label)
+        self.report.ids[key] = item.id
+
+    def match_existing(self) -> None:
+        """Find everything that already exists, before any create call (so rate limits never block reuse)."""
+        for spec in ROLES:
+            role = self.find_role(spec)
+            if role is not None:
+                self._reuse(spec.key, role, f"@{role.name}")
+                if role >= self.me.top_role:
+                    self.report.warnings.append(
+                        f"@{role.name} is above my top role, so I can't give it out. Drag my role above it."
+                    )
+        staff = self.matched.get("STAFF_ROLE_ID")
+        for spec in LAYOUT:
+            cat = self.find_category(spec)
+            if cat is None:
+                continue
+            self._reuse(spec.key, cat, f"📁 {cat.name}")
+            if spec.private:
+                if cat.permissions_for(self.guild.default_role).view_channel:
+                    self.report.warnings.append(f"📁 {cat.name} is visible to @everyone. Hide it in its permissions.")
+                if not cat.permissions_for(self.me).view_channel:
+                    self.report.warnings.append(f"📁 {cat.name} is hidden from me. Allow my role to View Channel.")
+                if staff is not None and not cat.permissions_for(staff).view_channel:
+                    self.report.warnings.append(f"📁 {cat.name} is hidden from @{staff.name}. Allow it View Channel.")
+        for cat_spec in LAYOUT:
+            for spec in cat_spec.channels:
+                ch = self.find_channel(spec, self.matched.get(cat_spec.key))
+                if ch is not None:
+                    self._reuse(spec.key, ch, f"🔊 {ch.name}" if spec.voice else ch.mention)
 
     # ----------------------------------------------------------- overwrites
     def private_overwrites(self, staff: Optional[discord.Role]) -> dict:
@@ -190,15 +253,8 @@ class SetupRunner:
 
     # -------------------------------------------------------------- steps
     async def ensure_role(self, spec: RoleSpec) -> Optional[discord.Role]:
-        role = self.find_role(spec)
-        if role is not None:
-            self.report.reused.append(f"@{role.name}")
-            self.report.ids[spec.key] = role.id
-            if role >= self.me.top_role:
-                self.report.warnings.append(
-                    f"@{role.name} is above my top role, so I can't give it out. Drag my role above it."
-                )
-            return role
+        if spec.key in self.matched:
+            return self.matched[spec.key]
         if self.dry_run:
             self.report.created.append(f"@{spec.name}")
             return None
@@ -213,25 +269,15 @@ class SetupRunner:
             self._postpone(spec.key, f"@{spec.name}", e)
             return None
         except discord.HTTPException as e:
-            self.report.failed.append(f"@{spec.name} ({e.__class__.__name__})")
+            self.report.failed.append(f"@{spec.name}: {_reason(e)}")
             return None
         self.report.created.append(f"@{role.name}")
         self.report.ids[spec.key] = role.id
         return role
 
     async def ensure_category(self, spec: CategorySpec, staff: Optional[discord.Role]):
-        cat = self.find_category(spec)
-        if cat is not None:
-            self.report.reused.append(f"📁 {cat.name}")
-            self.report.ids[spec.key] = cat.id
-            if spec.private:
-                if cat.permissions_for(self.guild.default_role).view_channel:
-                    self.report.warnings.append(f"📁 {cat.name} is visible to @everyone. Hide it in its permissions.")
-                if not cat.permissions_for(self.me).view_channel:
-                    self.report.warnings.append(f"📁 {cat.name} is hidden from me. Allow my role to View Channel.")
-                if staff is not None and not cat.permissions_for(staff).view_channel:
-                    self.report.warnings.append(f"📁 {cat.name} is hidden from @{staff.name}. Allow it View Channel.")
-            return cat
+        if spec.key in self.matched:
+            return self.matched[spec.key]
         if self.dry_run:
             self.report.created.append(f"📁 {spec.name}")
             return None
@@ -249,7 +295,7 @@ class SetupRunner:
             self._postpone(spec.key, f"📁 {spec.name}", e)
             return None
         except discord.HTTPException as e:
-            self.report.failed.append(f"📁 {spec.name} ({e.__class__.__name__})")
+            self.report.failed.append(f"📁 {spec.name}: {_reason(e)}")
             return None
         self.report.created.append(f"📁 {cat.name}")
         self.report.ids[spec.key] = cat.id
@@ -257,20 +303,18 @@ class SetupRunner:
 
     async def ensure_channel(self, spec: ChannelSpec, category, cat_spec: CategorySpec):
         label = f"🔊 {spec.name}" if spec.voice else f"#{spec.name}"
-        ch = self.find_channel(spec, category)
-        if ch is not None:
-            self.report.reused.append(f"🔊 {ch.name}" if spec.voice else ch.mention)
-            self.report.ids[spec.key] = ch.id
-            return ch
+        if spec.key in self.matched:
+            return self.matched[spec.key]
         if self.dry_run:
             self.report.created.append(f"{label} (in {cat_spec.name})")
             return None
         if category is None:
             if cat_spec.key in self.waiting_keys:
-                self._postpone(spec.key, label)  # created once its category exists
+                self._postpone(spec.key, f"{label} (in {cat_spec.name})")  # created once its category exists
             else:
-                self.report.failed.append(f"{label} (its category {cat_spec.name} is missing)")
+                self.report.failed.append(f"{label}: its category {cat_spec.name} couldn't be created")
             return None
+        label = f"{label} (in {cat_spec.name})"
         if self._limited():
             self._postpone(spec.key, label)
             return None
@@ -285,7 +329,7 @@ class SetupRunner:
             self._postpone(spec.key, label, e)
             return None
         except discord.HTTPException as e:
-            self.report.failed.append(f"{label} ({e.__class__.__name__})")
+            self.report.failed.append(f"{label}: {_reason(e)}")
             return None
         self.report.created.append(f"🔊 {ch.name}" if spec.voice else ch.mention)
         self.report.ids[spec.key] = ch.id
@@ -302,6 +346,7 @@ class SetupRunner:
             if not self.dry_run:
                 return self.report
 
+        self.match_existing()  # all reuse first; only truly missing items reach the create calls below
         roles = {}
         for spec in ROLES:
             roles[spec.key] = await self.ensure_role(spec)
@@ -425,6 +470,82 @@ def role_problem(guild: discord.Guild, key: str, role: discord.Role):
                 + ", ".join(risky[:4]) + ("…" if len(risky) > 4 else "") + "). Use a role without them."
             )
     return None
+
+
+def _link_catalog() -> dict[str, tuple[str, str]]:
+    """Every setting /setup-link can point at an existing item: key -> (label, kind)."""
+    catalog: dict[str, tuple[str, str]] = {}
+    for r in ROLES:
+        catalog[r.key] = (f"{r.name} role", "role")
+    catalog["MEMBER_ROLE_ID"] = ("Member role (given by the I accept button)", "role")
+    for c in LAYOUT:
+        catalog[c.key] = (f"{c.name} category", "category")
+        for ch in c.channels:
+            if ch.voice:
+                catalog[ch.key] = (f"{ch.name} voice channel", "voice")
+            else:
+                catalog[ch.key] = (f"#{ch.name} channel", "text_or_forum" if ch.key in FORUM_OK else "text")
+    catalog["MOD_LOG_CHANNEL_ID"] = ("Mod log channel (defaults to #mod-log)", "text")
+    catalog["TICKET_LOG_CHANNEL_ID"] = ("Ticket log channel (defaults to #mod-log)", "text")
+    catalog["PROMPT_PING_ROLE_ID"] = ("Prompt of the Day ping role", "role")
+    catalog["CHALLENGE_PING_ROLE_ID"] = ("Remix Friday ping role", "role")
+    return catalog
+
+
+LINK_KEYS = _link_catalog()
+KIND_NAMES = {
+    "role": "a role", "category": "a category", "voice": "a voice channel", "text": "a text channel",
+    "text_or_forum": "a text or forum channel",
+}
+
+
+def resolve_link_key(text: str) -> Optional[str]:
+    """Accept MEMBER_ROLE_ID, member_role, "member role", "prompt channel", "rules", ..."""
+    raw = (text or "").strip()
+    if raw in LINK_KEYS:
+        return raw
+    upper = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").upper()
+    for candidate in (upper, upper + "_ID", upper + "_CHANNEL_ID", upper + "_ROLE_ID", upper + "_CATEGORY_ID"):
+        if candidate in LINK_KEYS:
+            return candidate
+    alias = SETTING_ALIASES.get(raw.lower())
+    if alias:
+        return alias
+    wanted = normalize_name(raw)
+    for key, (label, _) in LINK_KEYS.items():
+        short = label.split(" (")[0]  # "Member role (given by ...)" -> "Member role"
+        if wanted in (normalize_name(label), normalize_name(short), normalize_name(short.rsplit(" ", 1)[0])):
+            return key
+    return None
+
+
+def link_problem(guild: discord.Guild, key: str, channel, role) -> tuple[object, Optional[str]]:
+    """Validate a /setup-link target. Returns (target, problem)."""
+    label, kind = LINK_KEYS[key]
+    if kind == "role":
+        if role is None:
+            return None, f"**{label}** needs {KIND_NAMES[kind]}. Fill in the `role` option."
+        return role, role_problem(guild, key, role)
+    if channel is None:
+        return None, f"**{label}** needs {KIND_NAMES[kind]}. Fill in the `channel` option."
+    ok = {
+        "category": isinstance(channel, discord.CategoryChannel),
+        "voice": isinstance(channel, discord.VoiceChannel),
+        "text": isinstance(channel, discord.TextChannel),
+        "text_or_forum": isinstance(channel, (discord.TextChannel, discord.ForumChannel)),
+    }[kind]
+    if not ok:
+        return None, f"**{label}** needs {KIND_NAMES[kind]}, but {channel.mention} isn't one."
+    return channel, None
+
+
+def member_role_note(role: discord.Role) -> str:
+    return (
+        f"\nThe **I accept the rules** button now gives {role.mention}, starting with the next click. "
+        "Members who already clicked it can click again to get the role."
+        "\nThis doesn't hide any channels. To make it a gate, deny **View Channels** to @everyone "
+        f"on your main categories and allow it for {role.mention}."
+    )
 
 
 class Setup(commands.Cog):
@@ -567,15 +688,61 @@ class Setup(commands.Cog):
         logger.info("%s set %s to %s (%s) in %s", ctx.author, key, role.name, role.id, ctx.guild)
         msg = f"✅ **{label}** is now {role.mention}."
         if key == "MEMBER_ROLE_ID":
-            msg += (
-                f"\nThe **I accept the rules** button now gives {role.mention}, starting with the next click. "
-                "Members who already clicked it can click again to get the role."
-                "\nThis doesn't hide any channels. To make it a gate, deny **View Channels** to @everyone "
-                f"on your main categories and allow it for {role.mention}."
-            )
+            msg += member_role_note(role)
         elif key in PING_KEYS and not role.mentionable and not ctx.guild.me.guild_permissions.mention_everyone:
             msg += f"\n⚠️ {role.mention} isn't mentionable, so pings won't notify. Turn on **Allow anyone to @mention**."
         await ctx.send(msg, ephemeral=True)
+
+    # ------------------------------------------------------------ /setup-link
+    @commands.hybrid_command(name="setup-link", description="Point a bot setting at an existing channel or role (admin)")
+    @app_commands.describe(
+        key="Which setting, e.g. Prompt of the Day channel, Member role, Tickets category",
+        channel="The existing channel or category to use",
+        role="The existing role to use",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @commands.has_permissions(administrator=True)
+    async def setup_link(
+        self,
+        ctx: commands.Context,
+        key: str,
+        channel: Optional[discord.abc.GuildChannel] = None,
+        role: Optional[discord.Role] = None,
+    ):
+        """Prefix usage: !setup-link PROMPT_CHANNEL_ID #prompt-of-the-day   or   !setup-link member_role @Verified"""
+        resolved = resolve_link_key(key)
+        if resolved is None:
+            await ctx.send(
+                f"❓ I don't know the setting `{trim(key, 50)}`. Pick one from the list, e.g. "
+                "`PROMPT_CHANNEL_ID`, `MEMBER_ROLE_ID`, `TICKET_CATEGORY_ID`.",
+                ephemeral=True,
+            )
+            return
+        target, problem = link_problem(ctx.guild, resolved, channel, role)
+        label = LINK_KEYS[resolved][0]
+        if problem:
+            await ctx.send(f"🚫 {problem}", ephemeral=True)
+            return
+
+        await gc.set_many(ctx.guild, {resolved: target.id})
+        logger.info("%s linked %s to %s (%s) in %s", ctx.author, resolved, target.name, target.id, ctx.guild)
+        shown = target.mention if not isinstance(target, discord.CategoryChannel) else f"📁 {target.name}"
+        msg = f"✅ **{label}** (`{resolved}`) is now {shown}. Saved for this server."
+        if resolved == "MEMBER_ROLE_ID":
+            msg += member_role_note(target)
+        elif resolved in PING_KEYS and not target.mentionable and not ctx.guild.me.guild_permissions.mention_everyone:
+            msg += f"\n⚠️ {target.mention} isn't mentionable, so pings won't notify. Turn on **Allow anyone to @mention**."
+        await ctx.send(msg, ephemeral=True)
+
+    @setup_link.autocomplete("key")
+    async def _setup_link_key_autocomplete(self, interaction: discord.Interaction, current: str):
+        wanted = normalize_name(current)
+        choices = [
+            app_commands.Choice(name=trim(f"{label} · {key}", 100), value=key)
+            for key, (label, _) in LINK_KEYS.items()
+            if not wanted or wanted in normalize_name(f"{label} {key}")
+        ]
+        return choices[:25]
 
 
 async def setup(bot: commands.Bot):
