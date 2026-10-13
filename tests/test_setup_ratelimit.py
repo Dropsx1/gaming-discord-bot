@@ -61,6 +61,7 @@ class LimitedGuild(ts.FakeGuild):
 class Admin:
     def __init__(self, dm_open=True):
         self.dm_open, self.dms, self.mention = dm_open, [], "@admin"
+        self.id = next(ts._ids)  # real users always have an ID (used to find them again after a restart)
 
     async def send(self, content=None, embed=None):
         if not self.dm_open:
@@ -70,7 +71,7 @@ class Admin:
 
 class Channel:
     def __init__(self):
-        self.sent = []
+        self.sent, self.id = [], next(ts._ids)
 
     async def send(self, content=None, embed=None):
         self.sent.append((content, embed))
@@ -149,6 +150,33 @@ async def _run():
             setup_cog.RESUME_MAX_ROUNDS = old_rounds
             setup_cog.SetupRunner.run = orig_run
         assert len(admin3.dms) == 1 and "run `/setup` again" in admin3.dms[0][0], admin3.dms
+
+        # 5. Seen live: Discord asked for a 3-hour wait. The bot keeps waiting (no instant give-up DM),
+        #    saves the pending finish, and picks it up again after a restart.
+        g4 = LimitedGuild(budget=0)
+        rep4 = await setup_cog.SetupRunner(g4, dry_run=False).run()
+        three_hours = time.time() + 3 * 3600
+        bot.get_guild = lambda gid: g4 if gid == g4.id else None
+        admin4, chan4 = Admin(), Channel()
+        cog.schedule_resume(g4, admin4, chan4, retry_at=three_hours)
+        await asyncio.sleep(0.05)
+        assert not cog.resume_tasks[g4.id].done() and admin4.dms == [], admin4.dms  # still waiting, no DM
+        assert gc.saved(g4)["_RESUME_AT"] == int(three_hours)
+        embed4 = setup_cog.build_summary(g4, rep4, dry_run=False)
+        assert "automatically" in embed4.description and "restart" in embed4.description
+
+        cog.resume_tasks[g4.id].cancel()  # the bot restarts (e.g. a Railway redeploy)...
+        await gc.set_many(g4, {"_RESUME_AT": int(time.time())})  # ...and by the time it's back the limit has passed
+        g4.budget = 100
+        bot2 = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        bot2.get_guild = lambda gid: g4 if gid == g4.id else None
+        bot2._connection._guilds = {g4.id: g4}
+        bot2.get_user = lambda uid: admin4 if uid == admin4.id else None
+        cog2 = setup_cog.Setup(bot2)
+        await cog2.on_ready()
+        await asyncio.wait_for(cog2.resume_tasks[g4.id], timeout=10)
+        assert len(admin4.dms) == 1 and "finished" in admin4.dms[0][0], admin4.dms
+        assert len(gc.saved(g4)) == 27 and "_RESUME_AT" not in gc.saved(g4)  # done, pending marker cleared
     finally:
         setup_cog.RESUME_PADDING = 5
         await db.close()

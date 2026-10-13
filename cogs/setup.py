@@ -85,7 +85,9 @@ LAYOUT = [
 
 # Auto-resume after a rate limit: extra seconds to wait, longest wait we'll do, and attempts.
 RESUME_PADDING = 5
-RESUME_MAX_WAIT = 3600
+RESUME_MAX_WAIT = 6 * 3600  # Discord has been seen asking for 3+ hours on new servers
+# A pending automatic finish is saved here (internal keys), so it survives bot restarts/redeploys.
+RESUME_KEYS = ("_RESUME_AT", "_RESUME_USER", "_RESUME_CHANNEL")
 RESUME_MAX_ROUNDS = 5
 
 # Prompt of the Day and Remix Friday also work in forum channels.
@@ -388,10 +390,15 @@ def build_summary(guild: discord.Guild, report: Report, dry_run: bool) -> discor
     embed = discord.Embed(title=title, color=color)
     if report.waiting and not dry_run:
         ts = int(report.retry_at) if report.retry_at else int(time.time()) + 600
+        if ts - time.time() > RESUME_MAX_WAIT:
+            then = f"Please run `/setup` again <t:{ts}:R>; that's longer than I wait automatically."
+        else:
+            then = (f"I'll create the rest automatically <t:{ts}:R> and DM you when it's done "
+                    "(even if I restart in the meantime). You can also run `/setup` again after that time.")
         embed.description = (
             "Discord limits how fast bots can create channels and roles, and that limit was hit. "
-            f"Everything done so far is saved. I'll create the rest automatically <t:{ts}:R> "
-            "and DM you when it's done. You can also run `/setup` again after that time."
+            f"Everything done so far is saved. {then} Or create the missing items yourself: "
+            "`/setup` recognizes them by name."
         )
     sections = [
         ("🆕 Would create" if dry_run else "🆕 Created", report.created),
@@ -560,15 +567,53 @@ class Setup(commands.Cog):
         for task in self.resume_tasks.values():
             task.cancel()
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Pick up automatic finishes that were pending when the bot restarted."""
+        for guild in self.bot.guilds:
+            saved = gc.saved(guild)
+            if "_RESUME_AT" not in saved:
+                continue
+            channel = guild.get_channel(saved.get("_RESUME_CHANNEL", 0))
+            logger.info("Restoring pending /setup finish in %s", guild)
+            self.schedule_resume(guild, saved.get("_RESUME_USER"), channel, float(saved["_RESUME_AT"]))
+
     def schedule_resume(self, guild: discord.Guild, user, channel, retry_at: float) -> None:
-        """Finish a rate-limited /setup once Discord allows it, then tell the admin."""
+        """Finish a rate-limited /setup once Discord allows it, then tell the admin.
+
+        `user` may be a user/member or a user ID (when restored after a restart).
+        """
         task = self.resume_tasks.get(guild.id)
         if task is not None and not task.done():
             return  # already scheduled
         self.resume_tasks[guild.id] = asyncio.create_task(self._resume(guild.id, user, channel, retry_at))
 
+    async def _save_pending(self, guild_id: int, user, channel, retry_at: float) -> None:
+        user_id = user if isinstance(user, int) else getattr(user, "id", 0)
+        await gc.set_many(guild_id, {
+            "_RESUME_AT": int(retry_at), "_RESUME_USER": int(user_id or 0),
+            "_RESUME_CHANNEL": int(getattr(channel, "id", 0) or 0),
+        })
+
+    async def _resolve_user(self, user):
+        if not isinstance(user, int):
+            return user
+        if not user:
+            return None
+        found = self.bot.get_user(user)
+        if found is None:
+            try:
+                found = await self.bot.fetch_user(user)
+            except discord.HTTPException:
+                return None
+        return found
+
     async def _resume(self, guild_id: int, user, channel, retry_at: float) -> None:
         report = None
+        try:
+            await self._save_pending(guild_id, user, channel, retry_at)
+        except Exception:
+            logger.exception("Could not save pending /setup finish for %s", guild_id)
         for _ in range(RESUME_MAX_ROUNDS):
             delay = max(RESUME_PADDING, retry_at - time.time() + RESUME_PADDING)
             if delay > RESUME_MAX_WAIT:
@@ -584,12 +629,20 @@ class Setup(commands.Cog):
             if not report.waiting:
                 break
             retry_at = report.retry_at
+            await self._save_pending(guild_id, user, channel, retry_at)
+        try:
+            await gc.delete_keys(guild_id, RESUME_KEYS)
+        except Exception:
+            logger.exception("Could not clear pending /setup finish for %s", guild_id)
         guild = self.bot.get_guild(guild_id)
         if guild is None:
             return
+        user = await self._resolve_user(user)
         if report is None or report.waiting:
+            when = f"<t:{int(retry_at)}:R>" if retry_at > time.time() else "now"
             text = (f"⏳ Discord is still limiting how fast I can create things in **{guild.name}**. "
-                    "Please run `/setup` again in about an hour. It picks up where it left off.")
+                    f"Please run `/setup` again {when}. It picks up where it left off. You can also create the "
+                    "missing items yourself; `/setup` will recognize them by name.")
             embed = build_summary(guild, report, dry_run=False) if report else None
         else:
             text = f"✅ `/setup` finished in **{guild.name}**."
@@ -630,12 +683,14 @@ class Setup(commands.Cog):
                 pending = self.resume_tasks.pop(ctx.guild.id, None)
                 if pending is not None and not pending.done():
                     pending.cancel()  # finished by hand; no follow-up needed
+                if "_RESUME_AT" in gc.saved(ctx.guild):
+                    await gc.delete_keys(ctx.guild, RESUME_KEYS)
 
     @commands.hybrid_command(name="setup-show", description="Show this server's saved bot configuration (admin)")
     @app_commands.default_permissions(administrator=True)
     @commands.has_permissions(administrator=True)
     async def setup_show(self, ctx: commands.Context):
-        saved = gc.saved(ctx.guild)
+        saved = {k: v for k, v in gc.saved(ctx.guild).items() if not k.startswith("_")}  # hide internal keys
         embed = discord.Embed(title=f"⚙️ Saved config for {ctx.guild.name}", color=discord.Color.blurple())
 
         def fmt(key: str, value: int) -> str:

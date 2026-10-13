@@ -101,6 +101,15 @@ async def set_many(guild: GuildLike, values: dict[str, int]) -> None:
     _cache.setdefault(gid, {}).update({k: int(v) for k, v in values.items()})
 
 
+async def delete_keys(guild: GuildLike, keys) -> None:
+    gid = _gid(guild)
+    keys = list(keys)
+    await _db.conn.executemany("DELETE FROM guild_config WHERE guild_id = ? AND key = ?", [(gid, k) for k in keys])
+    await _db.conn.commit()
+    for k in keys:
+        _cache.get(gid, {}).pop(k, None)
+
+
 def channel(guild: discord.Guild, key: str):
     """Resolve a configured channel, only if it belongs to this server."""
     cid = get(guild, key)
