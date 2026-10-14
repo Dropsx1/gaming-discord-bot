@@ -275,7 +275,7 @@ Everything AI is optional. Set `XAI_API_KEY` (from <https://console.x.ai>) in Ra
 | Feature | Needs | Model |
 |---|---|---|
 | `/idea`, `/prompt` | `XAI_API_KEY` + `XAI_MODEL` (otherwise built-in lists) | `XAI_MODEL` |
-| `/ask`, AI auto-moderation, `/imagine` safety check | `XAI_API_KEY` | `XAI_FAST_MODEL` (default `grok-4-1-fast-non-reasoning`, a cheap model) |
+| `/ask`, AI auto-moderation, `/imagine` safety check | `XAI_API_KEY` | `XAI_FAST_MODEL` (a cheap non-reasoning model; defaults to `XAI_MODEL`) |
 | `/imagine` | `XAI_API_KEY` | `XAI_IMAGE_MODEL` (default `grok-imagine-image`) |
 
 At startup the bot logs the model names your key can use, and warns if `XAI_FAST_MODEL` isn't one of them.

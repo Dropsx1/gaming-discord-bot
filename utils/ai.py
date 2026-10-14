@@ -6,7 +6,7 @@ Set in Railway (or .env):
                   ones at startup if this is missing or wrong)
 
 Optional, for /ask, /imagine and AI auto-moderation (cogs/ai_features.py):
-    XAI_FAST_MODEL    cheap text model (default grok-4-1-fast-non-reasoning)
+    XAI_FAST_MODEL    cheap text model (default: XAI_MODEL, else grok-4-1-fast-non-reasoning)
     XAI_IMAGE_MODEL   image model (default grok-imagine-image)
 These only need XAI_API_KEY.
 
@@ -29,7 +29,8 @@ log = logging.getLogger("bot.ai")
 API_BASE = os.getenv("XAI_API_BASE", "https://api.x.ai/v1").rstrip("/")
 XAI_API_KEY = os.getenv("XAI_API_KEY", "").strip()
 XAI_MODEL = os.getenv("XAI_MODEL", "").strip()
-XAI_FAST_MODEL = os.getenv("XAI_FAST_MODEL", "").strip() or "grok-4-1-fast-non-reasoning"
+# Cheap text model: XAI_FAST_MODEL, else the same model as /idea (XAI_MODEL), else a default.
+XAI_FAST_MODEL = os.getenv("XAI_FAST_MODEL", "").strip() or XAI_MODEL or "grok-4-1-fast-non-reasoning"
 XAI_IMAGE_MODEL = os.getenv("XAI_IMAGE_MODEL", "").strip() or "grok-imagine-image"
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 IMAGE_TIMEOUT = aiohttp.ClientTimeout(total=60)
