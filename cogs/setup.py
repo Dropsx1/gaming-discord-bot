@@ -496,6 +496,7 @@ def _link_catalog() -> dict[str, tuple[str, str]]:
     catalog["TICKET_LOG_CHANNEL_ID"] = ("Ticket log channel (defaults to #mod-log)", "text")
     catalog["PROMPT_PING_ROLE_ID"] = ("Prompt of the Day ping role", "role")
     catalog["CHALLENGE_PING_ROLE_ID"] = ("Remix Friday ping role", "role")
+    catalog["ASK_CHANNEL_ID"] = ("/ask channel (defaults to #bot-commands)", "text")
     return catalog
 
 
@@ -694,6 +695,8 @@ class Setup(commands.Cog):
         embed = discord.Embed(title=f"⚙️ Saved config for {ctx.guild.name}", color=discord.Color.blurple())
 
         def fmt(key: str, value: int) -> str:
+            if not key.endswith("_ID"):
+                return f"`{value}`"  # plain settings, e.g. AUTOMOD_SENSITIVITY
             if key.endswith("_ROLE_ID"):
                 return f"<@&{value}>"
             return f"<#{value}>"

@@ -30,6 +30,7 @@ COGS = [
     "cogs.tickets",
     "cogs.schedule",
     "cogs.giveaways",
+    "cogs.ai_features",
 ]
 
 intents = discord.Intents.default()

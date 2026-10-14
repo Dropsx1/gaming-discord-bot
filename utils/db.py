@@ -147,6 +147,31 @@ MIGRATIONS: list[list[str]] = [
             PRIMARY KEY (guild_id, key)
         )""",
     ],
+    # v6: AI usage log + AI auto-moderation flags
+    [
+        """CREATE TABLE ai_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            feature TEXT NOT NULL,
+            tokens INTEGER NOT NULL DEFAULT 0,
+            images INTEGER NOT NULL DEFAULT 0,
+            ok INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL
+        )""",
+        "CREATE INDEX idx_ai_usage_lookup ON ai_usage (guild_id, feature, created_at)",
+        """CREATE TABLE automod_flags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            undone INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        )""",
+    ],
 ]
 
 
@@ -274,3 +299,47 @@ class Database:
 
     async def reset_usage(self, kind: str) -> None:
         await self.execute("DELETE FROM content_usage WHERE kind = ?", (kind,))
+
+    # ------------------------------------------------------------ AI usage
+    async def log_ai(
+        self, guild_id: int, user_id: int, feature: str, tokens: int = 0, images: int = 0, ok: bool = True
+    ) -> None:
+        await self.execute(
+            "INSERT INTO ai_usage (guild_id, user_id, feature, tokens, images, ok, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, user_id, feature, tokens, images, int(ok), now()),
+        )
+
+    async def count_ai(self, guild_id: int, feature: str, since: int, user_id: Optional[int] = None) -> int:
+        """Successful calls of `feature` since `since` (one user, or the whole server)."""
+        sql = "SELECT COUNT(*) FROM ai_usage WHERE guild_id = ? AND feature = ? AND ok = 1 AND created_at >= ?"
+        params: list = [guild_id, feature, since]
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        return (await self.fetchone(sql, params))[0]
+
+    async def ai_usage_summary(self, guild_id: int, since: int) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT feature, COUNT(*) AS calls, SUM(ok) AS ok, SUM(tokens) AS tokens, SUM(images) AS images, "
+            "COUNT(DISTINCT user_id) AS users FROM ai_usage WHERE guild_id = ? AND created_at >= ? "
+            "GROUP BY feature ORDER BY feature",
+            (guild_id, since),
+        )
+
+    # ------------------------------------------------------- automod flags
+    async def add_flag(
+        self, guild_id: int, channel_id: int, user_id: int, content: str, reason: str, verdict: str
+    ) -> int:
+        return await self.execute(
+            "INSERT INTO automod_flags (guild_id, channel_id, user_id, content, reason, verdict, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, channel_id, user_id, content, reason, verdict, now()),
+        )
+
+    async def get_flag(self, flag_id: int) -> Optional[aiosqlite.Row]:
+        return await self.fetchone("SELECT * FROM automod_flags WHERE id = ?", (flag_id,))
+
+    async def mark_flag_undone(self, flag_id: int) -> bool:
+        """True if this call undid it (False if it was already undone)."""
+        return await self.execute_count("UPDATE automod_flags SET undone = 1 WHERE id = ? AND undone = 0", (flag_id,)) == 1

@@ -22,6 +22,7 @@ Every command works as a **slash command** (`/lfg`) and also with the **`!` pref
 | **Auto voice**: Join-to-Create temporary channels with owner controls | `/vc ...` |
 | **Tickets**: private support channels with claim, close (with optional transcript), add/remove user | `/ticketpanel`, `/ticket`, `/close`, `/claim`, `/adduser`, `/removeuser` |
 | **Fun**: game suggestions, conversation starters, challenges and prompts (optional Grok/xAI) | `/suggest`, `/idea`, `/prompt` |
+| **AI (Grok/xAI, optional)**: ask the bot questions, generate images, AI auto-moderation with Undo / Timeout buttons, usage stats | `/ask`, `/imagine`, `/automod` (admin), `/ai-usage` (admin), `/imagine-cap` (admin) |
 | **Server setup**: creates/reuses all channels and roles and saves their IDs; link existing channels/roles by hand; show the saved config | `/setup`, `/setup-link`, `/setup-role`, `/setup-show` (admin) |
 | **Utility** | `/help`, `/ping`, `/schedule-test` (admin), `!sync` (bot owner) |
 
@@ -59,6 +60,7 @@ gaming-discord-bot/
 │   ├── giveaways.py       # /giveaway
 │   ├── moderation.py      # /warn /warnings /timeout /untimeout /kick
 │   ├── fun.py             # /suggest /idea /prompt
+│   ├── ai_features.py     # /ask /imagine, AI automod, /ai-usage (Grok/xAI)
 │   ├── voice.py           # Join-to-Create + /vc
 │   └── tickets.py         # Ticket system
 ├── utils/
@@ -66,7 +68,7 @@ gaming-discord-bot/
 │   ├── guildconfig.py     # Per-server channel/role IDs (saved by /setup, env vars as fallback)
 │   ├── content.py         # Picks unused prompts/themes from data/
 │   ├── timeparse.py       # Reads event times like "sat 8pm"
-│   ├── ai.py              # Optional Grok/xAI hook
+│   ├── ai.py              # Optional Grok/xAI client (text, images, moderation)
 │   └── helpers.py         # Staff checks, logging, durations
 ├── data/
 │   ├── prompts.json       # 120 Prompt of the Day items
@@ -117,6 +119,8 @@ In your server, as an admin, run:
 /setup-link key:Prompt of the Day channel channel:#daily-prompt
 /setup-link key:Member role role:@Verified
                         point ANY setting at an existing channel, category or role
+/setup-link key:ASK_CHANNEL_ID channel:#ask-the-bot
+                        where /ask works (default: #bot-commands)
 ```
 
 `/setup-link` covers every setting `/setup` knows (channels, categories, roles, log channels, ping roles). Start typing in `key` and pick from the list, or use the name, e.g. `PROMPT_CHANNEL_ID` / `member_role`. It checks the target is the right kind (text, voice, category or role), and the same role safety rules as `/setup-role` apply.
@@ -266,7 +270,47 @@ Members click **🎫 Open Ticket** or use `/ticket`. Inside a ticket:
 
 ## Optional: Grok / xAI
 
-`/idea` and `/prompt` use the built-in lists unless you set `XAI_API_KEY` (from <https://console.x.ai>) and `XAI_MODEL`. If the key is set but the model isn't, the bot logs the model names your key can use at startup. Scheduled posts never use AI; they always come from `data/`.
+Everything AI is optional. Set `XAI_API_KEY` (from <https://console.x.ai>) in Railway. Without it, every AI command replies with a friendly "AI is off" message and auto-moderation does nothing. Scheduled posts never use AI; they always come from `data/`.
+
+| Feature | Needs | Model |
+|---|---|---|
+| `/idea`, `/prompt` | `XAI_API_KEY` + `XAI_MODEL` (otherwise built-in lists) | `XAI_MODEL` |
+| `/ask`, AI auto-moderation, `/imagine` safety check | `XAI_API_KEY` | `XAI_FAST_MODEL` (default `grok-4-1-fast-non-reasoning`, a cheap model) |
+| `/imagine` | `XAI_API_KEY` | `XAI_IMAGE_MODEL` (default `grok-imagine-image`) |
+
+At startup the bot logs the model names your key can use, and warns if `XAI_FAST_MODEL` isn't one of them.
+
+### /ask
+```
+/ask question:What's a good beginner build in Elden Ring?
+```
+- Short, safe-for-work answers focused on gaming, tech and creative topics. NSFW requests are refused. Replies are capped at 400 tokens and shown in an embed (under 1,800 characters).
+- Works in #bot-commands by default. Change it with `/setup-link key:ASK_CHANNEL_ID channel:#somewhere`. Staff can use it anywhere.
+- Limits: 1 question per 30 s per user, 30 per day per user (`ASK_DAILY_LIMIT`).
+
+### /imagine
+```
+/imagine prompt:a neon cyberpunk arcade at night, pixel art
+```
+- Posts one image with the prompt and who asked for it. Works only in #ai-art and #bot-commands.
+- NSFW prompts are blocked twice: a keyword check first (free), then a quick AI moderation check before anything is generated.
+- Limits: 1 image per 2 min per user, 5 per day per user (`IMAGINE_DAILY_LIMIT`), 50 per day for the whole server (`IMAGINE_GUILD_DAILY_CAP`, or `/imagine-cap images:100` per server).
+
+### AI auto-moderation (admin)
+```
+/automod status     /automod on     /automod off
+/automod sensitivity level:low|med|high
+```
+- Off by default. It watches public text channels and their threads. It skips staff, bots, private channels, the mod log and tickets.
+- Each message first goes through a free keyword/regex filter. Only suspicious messages are sent to the AI, which classifies them as ok / toxic / nsfw / spam. A user's messages are checked by the AI at most once every 10 s.
+  - **low**: slurs, threats, scams (free nitro…), NSFW words, 8+ mentions
+  - **med** (default): low, plus insults, Discord invite links, 5+ mentions and character spam
+  - **high**: med, plus any swearing and long all-caps messages
+- If the AI flags a message, the bot deletes it, DMs the author a short warning, and posts the message, user, reason and AI verdict to the mod log. The log post has **↩️ Undo** (re-posts the message and marks it a false positive) and **🔇 Timeout 10m** buttons, which only Staff can use and which keep working after restarts.
+- The bot needs **Manage Messages** to delete messages and **Moderate Members** for the timeout button.
+
+### /ai-usage (admin)
+Shows today's and this month's AI calls per feature (`ask`, `imagine`, `imagine-check`, `automod`), with tokens, images, failures and how many users. It also lists the current limits. Every AI call is logged in the `ai_usage` table. "Today" and limits reset at midnight in `TIMEZONE`.
 
 ## Troubleshooting
 

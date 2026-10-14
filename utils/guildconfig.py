@@ -31,7 +31,10 @@ ROLE_KEYS = [
 KEYS = CHANNEL_KEYS + CATEGORY_KEYS + ROLE_KEYS
 
 # If a key isn't set, use this one instead (e.g. mod log -> general staff log).
-FALLBACKS = {"MOD_LOG_CHANNEL_ID": "LOG_CHANNEL_ID", "TICKET_LOG_CHANNEL_ID": "LOG_CHANNEL_ID"}
+FALLBACKS = {
+    "MOD_LOG_CHANNEL_ID": "LOG_CHANNEL_ID", "TICKET_LOG_CHANNEL_ID": "LOG_CHANNEL_ID",
+    "ASK_CHANNEL_ID": "BOT_COMMANDS_CHANNEL_ID",
+}
 
 _cache: dict[int, dict[str, int]] = {}
 _db = None
