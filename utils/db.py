@@ -172,6 +172,30 @@ MIGRATIONS: list[list[str]] = [
             created_at INTEGER NOT NULL
         )""",
     ],
+    # v7: live AI news feed (articles are shared by all servers; posts are per server)
+    [
+        """CREATE TABLE news_items (
+            url TEXT PRIMARY KEY,
+            feed TEXT NOT NULL,
+            title TEXT NOT NULL,
+            source TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            image TEXT,
+            published_at INTEGER NOT NULL,
+            score INTEGER,
+            first_seen INTEGER NOT NULL
+        )""",
+        "CREATE INDEX idx_news_items_published ON news_items (published_at)",
+        """CREATE TABLE news_posts (
+            guild_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            message_id INTEGER,
+            posted_at INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, url)
+        )""",
+        "CREATE INDEX idx_news_posts_time ON news_posts (guild_id, kind, posted_at)",
+    ],
 ]
 
 
@@ -326,6 +350,70 @@ class Database:
             "GROUP BY feature ORDER BY feature",
             (guild_id, since),
         )
+
+    # ------------------------------------------------------------- AI news
+    async def news_known(self, urls: list[str]) -> set[str]:
+        known: set[str] = set()
+        for i in range(0, len(urls), 500):
+            chunk = urls[i:i + 500]
+            rows = await self.fetchall(
+                f"SELECT url FROM news_items WHERE url IN ({','.join('?' * len(chunk))})", chunk
+            )
+            known.update(r["url"] for r in rows)
+        return known
+
+    async def news_feed_seen(self, feed: str) -> bool:
+        return await self.fetchone("SELECT 1 FROM news_items WHERE feed = ? LIMIT 1", (feed,)) is not None
+
+    async def add_news_items(self, items: list, seen_at: int) -> None:
+        """items: utils.news.Article objects. Already-known URLs are ignored."""
+        await self.conn.executemany(
+            "INSERT OR IGNORE INTO news_items (url, feed, title, source, summary, image, published_at, score, first_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(a.url, a.feed, a.title, a.source, a.summary, a.image, a.published_at, a.score, seen_at) for a in items],
+        )
+        await self.conn.commit()
+
+    async def news_candidates(self, guild_id: int, since: int, min_score: Optional[int] = None) -> list[aiosqlite.Row]:
+        """Articles published since `since` that this server hasn't had yet, best first."""
+        sql = (
+            "SELECT * FROM news_items i WHERE published_at >= ? "
+            "AND NOT EXISTS (SELECT 1 FROM news_posts p WHERE p.guild_id = ? AND p.url = i.url)"
+        )
+        params: list = [since, guild_id]
+        if min_score is not None:
+            sql += " AND score >= ?"
+            params.append(min_score)
+        sql += " ORDER BY COALESCE(score, 5) DESC, published_at DESC"
+        return await self.fetchall(sql, params)
+
+    async def latest_news(self) -> Optional[aiosqlite.Row]:
+        return await self.fetchone("SELECT * FROM news_items ORDER BY published_at DESC, first_seen DESC LIMIT 1")
+
+    async def add_news_post(self, guild_id: int, url: str, kind: str, message_id: Optional[int], posted_at: int) -> None:
+        """kind: normal, breaking, test (/news test) or failed (Discord refused it; never retried)."""
+        verb = "INSERT OR IGNORE" if kind == "test" else "INSERT OR REPLACE"  # a test never rewrites a real post
+        await self.execute(
+            f"{verb} INTO news_posts (guild_id, url, kind, message_id, posted_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, url, kind, message_id, posted_at),
+        )
+
+    async def count_news_posts(self, guild_id: int, since: int, kinds: tuple[str, ...]) -> int:
+        row = await self.fetchone(
+            f"SELECT COUNT(*) FROM news_posts WHERE guild_id = ? AND posted_at >= ? AND kind IN ({','.join('?' * len(kinds))})",
+            (guild_id, since, *kinds),
+        )
+        return row[0]
+
+    async def last_news_post(self, guild_id: int, kind: str) -> int:
+        row = await self.fetchone("SELECT MAX(posted_at) FROM news_posts WHERE guild_id = ? AND kind = ?", (guild_id, kind))
+        return row[0] or 0
+
+    async def prune_news(self, before: int) -> None:
+        """Forget old articles. They can't come back as new: anything older than 24h is never posted."""
+        await self.conn.execute("DELETE FROM news_items WHERE first_seen < ? AND published_at < ?", (before, before))
+        await self.conn.execute("DELETE FROM news_posts WHERE posted_at < ?", (before,))
+        await self.conn.commit()
 
     # ------------------------------------------------------- automod flags
     async def add_flag(

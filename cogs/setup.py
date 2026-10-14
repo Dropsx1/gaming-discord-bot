@@ -449,10 +449,12 @@ SETTING_ALIASES = {
     "member": "MEMBER_ROLE_ID", "staff": "STAFF_ROLE_ID", "prompt king": "PROMPT_KING_ROLE_ID",
     "remix champion": "REMIX_CHAMPION_ROLE_ID", "lfg": "LFG_ROLE_ID", "prompt pings": "PROMPT_PING_ROLE_ID",
     "challenge pings": "CHALLENGE_PING_ROLE_ID", "challenges": "CHALLENGE_PING_ROLE_ID",
+    "news": "NEWS_CHANNEL_ID", "ai news": "NEWS_CHANNEL_ID", "news channel": "NEWS_CHANNEL_ID",
+    "news role": "NEWS_ROLE_ID", "ai news role": "NEWS_ROLE_ID",
 }
 # Roles the bot hands to members (by button or as a prize): must be assignable and harmless.
 GRANTED_KEYS = {"MEMBER_ROLE_ID", "PROMPT_KING_ROLE_ID", "REMIX_CHAMPION_ROLE_ID"}
-PING_KEYS = {"LFG_ROLE_ID", "PROMPT_PING_ROLE_ID", "CHALLENGE_PING_ROLE_ID"}
+PING_KEYS = {"LFG_ROLE_ID", "PROMPT_PING_ROLE_ID", "CHALLENGE_PING_ROLE_ID", "NEWS_ROLE_ID"}
 # Never hand these out automatically.
 DANGEROUS_PERMS = (
     "administrator", "manage_guild", "manage_roles", "manage_channels", "manage_webhooks", "manage_messages",
@@ -497,6 +499,8 @@ def _link_catalog() -> dict[str, tuple[str, str]]:
     catalog["PROMPT_PING_ROLE_ID"] = ("Prompt of the Day ping role", "role")
     catalog["CHALLENGE_PING_ROLE_ID"] = ("Remix Friday ping role", "role")
     catalog["ASK_CHANNEL_ID"] = ("/ask channel (defaults to #bot-commands)", "text")
+    catalog["NEWS_CHANNEL_ID"] = ("Live AI news channel (/news)", "text")
+    catalog["NEWS_ROLE_ID"] = ("AI News ping role (defaults to a role named AI News)", "role")
     return catalog
 
 

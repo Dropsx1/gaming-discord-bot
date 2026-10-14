@@ -103,6 +103,19 @@ REMIX_REMINDER_TIME = time(17, 9)  # Sundays: "voting closes soon" reminder
 REMIX_CLOSE_TIME = time(18, 0)     # Sundays: voting deadline + winner
 DIGEST_HEADLINES_PER_FEED = 3      # newest N per feed (drops to 2 if a section is too long)
 
+# --- Live AI news (/news) --------------------------------------------------------
+NEWS_CHANNEL_ID = _int("NEWS_CHANNEL_ID")       # or /setup-link NEWS_CHANNEL_ID
+NEWS_ROLE_ID = _int("NEWS_ROLE_ID")             # pinged on breaking news; default: a role named "AI News"
+NEWS_POLL_MINUTES = max(5, _int("NEWS_POLL_MINUTES", 20))
+NEWS_MIN_GAP_MINUTES = _int("NEWS_MIN_GAP_MINUTES", 30)  # at most 1 normal post per this many minutes
+NEWS_DAILY_LIMIT = _int("NEWS_DAILY_LIMIT", 12)          # normal posts per day (TIMEZONE midnight to midnight)
+NEWS_BREAKING_SCORE = _int("NEWS_BREAKING_SCORE", 9)     # AI importance 1-10 at or above this = BREAKING
+NEWS_BREAKING_DAILY_LIMIT = _int("NEWS_BREAKING_DAILY_LIMIT", 3)  # safety cap on breaking posts per day
+NEWS_QUIET_START = _int("NEWS_QUIET_START", 1)  # quiet hours (local time, TIMEZONE): no normal posts
+NEWS_QUIET_END = _int("NEWS_QUIET_END", 7)      # from 1:00 to 6:59; breaking news still posts
+NEWS_MAX_AGE_HOURS = 24                          # never post articles older than this (no flood on first run)
+NEWS_BREAKING_MAX_AGE_HOURS = 6                  # older high-scoring stories post as normal news
+
 # --- Self-roles ---------------------------------------------------------------
 # Auto-create a self-role if it doesn't exist yet (needs Manage Roles).
 SELF_ROLES_AUTO_CREATE = _bool("SELF_ROLES_AUTO_CREATE", True)

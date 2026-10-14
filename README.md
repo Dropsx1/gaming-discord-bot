@@ -23,6 +23,7 @@ Every command works as a **slash command** (`/lfg`) and also with the **`!` pref
 | **Tickets**: private support channels with claim, close (with optional transcript), add/remove user | `/ticketpanel`, `/ticket`, `/close`, `/claim`, `/adduser`, `/removeuser` |
 | **Fun**: game suggestions, conversation starters, challenges and prompts (optional Grok/xAI) | `/suggest`, `/idea`, `/prompt` |
 | **AI (Grok/xAI, optional)**: ask the bot questions, generate images, AI auto-moderation with Undo / Timeout buttons, usage stats | `/ask`, `/imagine`, `/automod` (admin), `/ai-usage` (admin), `/imagine-cap` (admin) |
+| **Live AI news**: new articles from OpenAI, Anthropic, Google DeepMind, The Verge, TechCrunch, VentureBeat, Ars Technica and MIT Tech Review, each posted once, with optional AI summaries and 🚨 BREAKING alerts | `/news status · on · off · test` (admin) |
 | **Server setup**: creates/reuses all channels and roles and saves their IDs; link existing channels/roles by hand; show the saved config | `/setup`, `/setup-link`, `/setup-role`, `/setup-show` (admin) |
 | **Utility** | `/help`, `/ping`, `/schedule-test` (admin), `!sync` (bot owner) |
 
@@ -61,12 +62,14 @@ gaming-discord-bot/
 │   ├── moderation.py      # /warn /warnings /timeout /untimeout /kick
 │   ├── fun.py             # /suggest /idea /prompt
 │   ├── ai_features.py     # /ask /imagine, AI automod, /ai-usage (Grok/xAI)
+│   ├── news.py            # Live AI news feed + /news
 │   ├── voice.py           # Join-to-Create + /vc
 │   └── tickets.py         # Ticket system
 ├── utils/
 │   ├── db.py              # SQLite storage + migrations
 │   ├── guildconfig.py     # Per-server channel/role IDs (saved by /setup, env vars as fallback)
 │   ├── content.py         # Picks unused prompts/themes from data/
+│   ├── news.py            # RSS article parsing for the AI news feed
 │   ├── timeparse.py       # Reads event times like "sat 8pm"
 │   ├── ai.py              # Optional Grok/xAI client (text, images, moderation)
 │   └── helpers.py         # Staff checks, logging, durations
@@ -121,6 +124,8 @@ In your server, as an admin, run:
                         point ANY setting at an existing channel, category or role
 /setup-link key:ASK_CHANNEL_ID channel:#ask-the-bot
                         where /ask works (default: #bot-commands)
+/setup-link key:NEWS_CHANNEL_ID channel:#ai-news
+                        where the live AI news feed posts (see "Live AI news")
 ```
 
 `/setup-link` covers every setting `/setup` knows (channels, categories, roles, log channels, ping roles). Start typing in `key` and pick from the list, or use the name, e.g. `PROMPT_CHANNEL_ID` / `member_role`. It checks the target is the right kind (text, voice, category or role), and the same role safety rules as `/setup-role` apply.
@@ -165,6 +170,7 @@ You can still set channel/role IDs as env vars (see [`.env.example`](.env.exampl
 | Schedule times | `*_TIME` values in `config.py` |
 | Prompts / Remix themes | `data/prompts.json`, `data/remix_themes.json`. Keep every `id` unique. Items are picked at random from the unused ones; the rotation resets once every item has been used |
 | Digest feeds | `data/rss_feeds.json` (the newest 3 headlines per feed) |
+| AI news feeds | `ai_news` in `data/rss_feeds.json` (`{name, url}`; the `ai` feeds are included too). News limits: `NEWS_*` in `config.py` or as env vars |
 | Rules text | `data/rules.md`. Run `/rulespanel` again after editing |
 | Server name in text | Write `{server}` in `rules.md`, a prompt or a Remix theme. The bot fills in the name of the server it's posting in (e.g. "📜 {server} Rules" → "📜 Nexus Arcade Rules") |
 
@@ -310,7 +316,27 @@ At startup the bot logs the model names your key can use, and warns if `XAI_FAST
 - The bot needs **Manage Messages** to delete messages and **Moderate Members** for the timeout button.
 
 ### /ai-usage (admin)
-Shows today's and this month's AI calls per feature (`ask`, `imagine`, `imagine-check`, `automod`), with tokens, images, failures and how many users. It also lists the current limits. Every AI call is logged in the `ai_usage` table. "Today" and limits reset at midnight in `TIMEZONE`.
+Shows today's and this month's AI calls per feature (`ask`, `imagine`, `imagine-check`, `automod`, `news`), with tokens, images, failures and how many users. It also lists the current limits. Every AI call is logged in the `ai_usage` table. "Today" and limits reset at midnight in `TIMEZONE`.
+
+## Live AI news
+
+A channel that posts new AI articles as they come out.
+
+```
+/setup-link key:NEWS_CHANNEL_ID channel:#ai-news     turn it on: pick the channel
+/news status      what's on, posted today, how many are waiting
+/news off         pause it          /news on      resume it
+/news test        post the latest article right now
+```
+
+- **Sources:** OpenAI, Anthropic, Google DeepMind, The Verge AI, TechCrunch AI, VentureBeat AI, Ars Technica AI and MIT Technology Review AI (the `ai_news` list in `data/rss_feeds.json`), plus the digest's `ai` feeds. Anthropic has no official RSS feed, so a community mirror is used.
+- **How it works:** every 20 minutes the bot checks every feed. Each article is saved by its URL, so it's posted **once** per server, even if a feed lists it again or adds tracking codes to the link. Each post shows the title, source, a 1–2 sentence summary, a link and the article's image when there is one.
+- **No flood:** articles more than 24 hours old are never posted, so turning it on (or the first run) doesn't dump the backlog.
+- **Limits:** at most **1 post per 30 minutes** and **12 per day** (midnight to midnight in `TIMEZONE`). Extra articles wait in a queue and the best go first. No normal posts during **quiet hours, 1–7 AM** Eastern.
+- **With `XAI_API_KEY`:** the AI writes the summary and scores each article's importance from 1 to 10 (shown in the footer); the queue is ordered by that score. A **9 or 10** is **🚨 BREAKING**: a red embed that posts right away, even in quiet hours, and pings the role named **AI News** (or the role set with `/setup-link key:NEWS_ROLE_ID`). Breaking news is capped at 3 a day as a safety net. Make the role mentionable so the ping notifies, and add it to your ping self-roles if members should opt in. The AI only looks at new articles from the last 24 hours, at most 20 per check; its calls show as `news` in `/ai-usage`.
+- **Without a key:** the feeds' own descriptions are used as summaries, newest first, and nothing is marked breaking.
+- **Problems** go to the mod log: a feed that fails 3 checks in a row (it's skipped until it works again), or a post the bot couldn't make (missing permissions). A bad feed never stops the others. The bot needs **Send Messages** and **Embed Links** in the news channel.
+- **Tuning (optional env vars):** `NEWS_POLL_MINUTES` (20), `NEWS_MIN_GAP_MINUTES` (30), `NEWS_DAILY_LIMIT` (12), `NEWS_BREAKING_SCORE` (9), `NEWS_BREAKING_DAILY_LIMIT` (3), `NEWS_QUIET_START` / `NEWS_QUIET_END` (1 / 7).
 
 ## Troubleshooting
 
@@ -327,6 +353,7 @@ Shows today's and this month's AI calls per feature (`ask`, `imagine`, `imagine-
 | Posted, but no thread / "couldn't create a thread" | Give the bot Create Public Threads + Send Messages in Threads in that channel |
 | Role ping shows but doesn't notify | Make the role mentionable, or keep the bot's Mention Everyone permission |
 | Prompt or Remix didn't post | Check `/setup-show` lists `PROMPT_CHANNEL_ID` / `CHALLENGE_CHANNEL_ID`, and look for `Job prompt` / `Job remix_kickoff` in the logs. Try `/schedule-test` |
+| AI news isn't posting | `/news status`: is it on, with a channel? It waits 30 min between posts, stops at 12 a day and pauses 1–7 AM. Only articles from the last 24 hours are posted. Try `/news test` |
 | Digest says a feed couldn't be loaded | That site was down or changed its feed URL; edit `data/rss_feeds.json` |
 | New members can't see anything after accepting | Allow View Channels for the **Member** role on your categories, and check `/setup-show` lists `MEMBER_ROLE_ID` |
 | Duplicate slash commands | Commands were once synced globally too. The global copies expire, or re-invite the bot |

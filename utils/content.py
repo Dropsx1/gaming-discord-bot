@@ -52,10 +52,35 @@ def load_items(kind: str) -> list[dict]:
     return items
 
 
-def load_feeds() -> dict[str, list[str]]:
+NEWS_KEY = "ai_news"  # live AI news feeds ({name, url}); not part of the weekly digest
+
+
+def _read_feeds() -> dict:
     with (DATA_DIR / "rss_feeds.json").open(encoding="utf-8") as f:
-        raw = json.load(f)
-    return {cat: [u for u in urls if isinstance(u, str) and u.startswith("http")] for cat, urls in raw.items()}
+        return json.load(f)
+
+
+def load_feeds() -> dict[str, list[str]]:
+    """Weekly digest feeds: {category: [url, ...]}."""
+    return {
+        cat: [u for u in urls if isinstance(u, str) and u.startswith("http")]
+        for cat, urls in _read_feeds().items() if cat != NEWS_KEY
+    }
+
+
+def load_news_feeds() -> list[tuple[Optional[str], str]]:
+    """Live AI news feeds: [(source name or None, url)] from `ai_news` plus the digest's `ai` list."""
+    raw = _read_feeds()
+    feeds: dict[str, Optional[str]] = {}
+    for entry in raw.get(NEWS_KEY, []):
+        if isinstance(entry, dict) and str(entry.get("url", "")).startswith("http"):
+            feeds[entry["url"]] = entry.get("name") or None
+        elif isinstance(entry, str) and entry.startswith("http"):
+            feeds[entry] = None
+    for url in raw.get("ai", []):
+        if isinstance(url, str) and url.startswith("http"):
+            feeds.setdefault(url, None)  # name comes from the feed's own title
+    return [(name, url) for url, name in feeds.items()]
 
 
 SERVER_PLACEHOLDER = "{server}"
