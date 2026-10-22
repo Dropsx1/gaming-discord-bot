@@ -22,7 +22,7 @@ Every command works as a **slash command** (`/lfg`) and also with the **`!` pref
 | **Auto voice**: Join-to-Create temporary channels with owner controls | `/vc ...` |
 | **Tickets**: private support channels with claim, close (with optional transcript), add/remove user | `/ticketpanel`, `/ticket`, `/close`, `/claim`, `/adduser`, `/removeuser` |
 | **Fun**: game suggestions, conversation starters, challenges and prompts (optional Grok/xAI) | `/suggest`, `/idea`, `/prompt` |
-| **AI (Grok/xAI, optional)**: ask the bot questions, generate images, AI auto-moderation with Undo / Timeout buttons, usage stats | `/ask`, `/imagine`, `/automod` (admin), `/ai-usage` (admin), `/imagine-cap` (admin) |
+| **AI (Grok/xAI, optional)**: chat that remembers (also by @mention), chat summaries, trivia with XP, image generation with styles, AI welcome lines, AI auto-moderation (text + images) with Undo / Timeout buttons, usage stats and daily cost caps | `/ask`, `/ask reset`, `/summarize`, `/trivia`, `/trivia-leaderboard`, `/imagine`, `/automod` (admin), `/ai-usage` (admin), `/imagine-cap` (admin) |
 | **Live AI news**: new articles from OpenAI, Anthropic, Google DeepMind, The Verge, TechCrunch, VentureBeat, Ars Technica and MIT Tech Review, each posted once, with optional AI summaries and 🚨 BREAKING alerts | `/news status · on · off · test` (admin) |
 | **Server setup**: creates/reuses all channels and roles and saves their IDs; link existing channels/roles by hand; show the saved config | `/setup`, `/setup-link`, `/setup-role`, `/setup-show` (admin) |
 | **Utility** | `/help`, `/ping`, `/schedule-test` (admin), `!sync` (bot owner) |
@@ -61,7 +61,8 @@ gaming-discord-bot/
 │   ├── giveaways.py       # /giveaway
 │   ├── moderation.py      # /warn /warnings /timeout /untimeout /kick
 │   ├── fun.py             # /suggest /idea /prompt
-│   ├── ai_features.py     # /ask /imagine, AI automod, /ai-usage (Grok/xAI)
+│   ├── ai_features.py     # /ask (+ @mention chat), /imagine, AI automod, /ai-usage (Grok/xAI)
+│   ├── ai_extras.py       # /summarize, /trivia, /trivia-leaderboard
 │   ├── news.py            # Live AI news feed + /news
 │   ├── voice.py           # Join-to-Create + /vc
 │   └── tickets.py         # Ticket system
@@ -281,32 +282,72 @@ Everything AI is optional. Set `XAI_API_KEY` (from <https://console.x.ai>) in Ra
 | Feature | Needs | Model |
 |---|---|---|
 | `/idea`, `/prompt` | `XAI_API_KEY` + `XAI_MODEL` (otherwise built-in lists) | `XAI_MODEL` |
-| `/ask`, AI auto-moderation, `/imagine` safety check | `XAI_API_KEY` | `XAI_FAST_MODEL` (a cheap non-reasoning model; defaults to `XAI_MODEL`) |
+| `/ask`, @mention chat, `/summarize`, ticket summaries, news recaps | `XAI_API_KEY` | `XAI_SMART_MODEL` (default `grok-4.7`, xAI's flagship chat model) |
+| AI auto-moderation (text), `/imagine` safety check + prompt enhancement, news scoring, `/trivia`, welcome lines | `XAI_API_KEY` | `XAI_FAST_MODEL` (a cheap non-reasoning model; defaults to `XAI_MODEL`) |
+| AI auto-moderation (images) | `XAI_API_KEY` + `/automod images on` | `XAI_VISION_MODEL` (default: `XAI_SMART_MODEL`; grok-4.7 takes image input) |
 | `/imagine` | `XAI_API_KEY` | `XAI_IMAGE_MODEL` (default `grok-imagine-image`) |
 
-At startup the bot logs the model names your key can use, and warns if `XAI_FAST_MODEL` isn't one of them.
+At startup the bot logs the model names your key can use, and warns if a configured model isn't one of them.
 
-### /ask
+**Daily cost caps.** Every AI call is priced (xAI's list prices in `utils/ai.py`) and counted per feature per day (saved in SQLite, so restarts don't reset it). When a feature reaches its cap it behaves as if the AI were unavailable (the usual friendly message) until midnight in `TIMEZONE`. Defaults (USD/day, whole bot): ask 2, imagine 2, summarize 1, automod-image 1, mention 1, automod 0.5, news 0.5, trivia 0.5, ticket-summary 0.5, others 0.25. Override with e.g. `AI_DAILY_COST_CAPS=ask=5,imagine=3`.
+
+`XAI_SMART_REASONING` (default `low`) sets grok-4.7's reasoning effort for chat; empty = the model default (`high`, slower and pricier). If a model rejects it, the bot retries once without it.
+
+### /ask (chat that remembers)
 ```
-/ask question:What's a good beginner build in Elden Ring?
+/ask chat question:What's a good beginner build in Elden Ring?
+/ask chat question:And which weapon fits it?      (remembers the last answer)
+/ask reset                                         forget this channel's / thread's conversation
+@Bot what about armor?                             same as /ask, in the /ask channel or its threads
 ```
-- Short, safe-for-work answers focused on gaming, tech and creative topics. NSFW requests are refused. Replies are capped at 400 tokens and shown in an embed (under 1,800 characters).
+- The bot remembers the last `ASK_MEMORY_TURNS` (6) exchanges per channel or thread for `ASK_MEMORY_HOURS` (24 h), stored in SQLite. Each remembered question carries the asker's name, so several members can share one conversation.
+- **🧵 Continue in thread** under an answer opens a thread that starts with the conversation so far.
+- Mentioning the bot uses the same memory, cooldown and daily limit. `@Bot help` (a prefix command) still runs the command.
+- Short, safe-for-work answers. NSFW requests are refused.
 - Works in #bot-commands by default. Change it with `/setup-link key:ASK_CHANNEL_ID channel:#somewhere`. Staff can use it anywhere.
-- Limits: 1 question per 30 s per user, 30 per day per user (`ASK_DAILY_LIMIT`).
+- Limits: 1 question per 30 s per user, 30 per day per user (`ASK_DAILY_LIMIT`), shared by `/ask` and mentions.
+
+### /summarize
+```
+/summarize messages:100          only you see it
+/summarize messages:50 public:True   (staff) post it for everyone
+```
+- Summarizes the last N (5-200) non-bot messages into **topics**, **decisions** and **open questions**.
+- Limits: 1 per 2 min per user, `SUMMARIZE_DAILY_LIMIT` (10) per day.
+- **Tickets:** staff can close with **Close + transcript + AI summary** (or `/close ai_summary:True`) to post a summary to the ticket log.
+
+### /trivia
+```
+/trivia topic:Zelda difficulty:hard
+/trivia-leaderboard
+```
+- The AI writes one multiple-choice question; everyone answers with the buttons within 30 s. First correct answer: 10/20/35 XP (easy/medium/hard); later correct answers get half. XP is saved per server.
+- Limits: one question per channel every 20 s, `TRIVIA_DAILY_LIMIT` (20) questions started per user per day.
 
 ### /imagine
 ```
-/imagine prompt:a neon cyberpunk arcade at night, pixel art
+/imagine prompt:a fox knight style:pixel art aspect_ratio:16:9
 ```
-- Posts one image with the prompt and who asked for it. Works only in #ai-art and #bot-commands.
+- **Styles:** none, anime, pixel art, cinematic, logo, poster, 3d. **Aspect ratio:** auto (model picks), 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3 (values `grok-imagine-image` supports).
+- **Enhance** (on by default): after the safety checks, short prompts (≤ 20 words) are rewritten into a detailed prompt in the chosen style. The rewrite is shown under the image; if it fails or trips the NSFW filter, your own prompt is used.
+- **🔁 Variation** makes another image from the same prompt; **🎛️ Remix** opens a box to edit the prompt (which goes through every check again). Both count against the clicker's own limits.
+- Works only in #ai-art and #bot-commands.
 - NSFW prompts are blocked twice: a keyword check first (free), then a quick AI moderation check before anything is generated.
 - Limits: 1 image per 2 min per user, 5 per day per user (`IMAGINE_DAILY_LIMIT`), 50 per day for the whole server (`IMAGINE_GUILD_DAILY_CAP`, or `/imagine-cap images:100` per server).
+
+### AI welcome messages
+With a key, new members get a short personalized greeting line (on the fast model) at the top of the usual welcome embed. If the AI is off, slow (8 s), fails, says something unsafe, or more than 20 people join in an hour, the normal template is used. Turn it off with `WELCOME_AI=false`. `/welcometest` previews it.
 
 ### AI auto-moderation (admin)
 ```
 /automod status     /automod on     /automod off
 /automod sensitivity level:low|med|high
+/automod mode mode:delete|warn       warn = keep the message, DM a warning, log it
+/automod images enabled:on|off       check PNG/JPEG uploads with the vision model (off by default)
+/automod stats days:30               flags and Undo clicks (false-positive rate) by reason and verdict
 ```
+- The AI also sees the 3 messages before a flagged one, so banter isn't mistaken for harassment.
+- Image checks: at most 2 images per message and one check per member every 30 s.
 - Off by default. It watches public text channels and their threads. It skips staff, bots, private channels, the mod log and tickets.
 - Each message first goes through a free keyword/regex filter. Only suspicious messages are sent to the AI, which classifies them as ok / toxic / nsfw / spam. A user's messages are checked by the AI at most once every 10 s.
   - **low**: slurs, threats, scams (free nitro…), NSFW words, 8+ mentions
@@ -327,7 +368,12 @@ A channel that posts new AI articles as they come out.
 /news status      what's on, posted today, how many are waiting
 /news off         pause it          /news on      resume it
 /news test        post the latest article right now
+/news daily on|off|now   optional daily AI-written recap of the top stories (posts ~NEWS_DAILY_RECAP_HOUR:30)
 ```
+
+- The same story from several outlets is merged: it posts once, with "Also covered by …" in the footer.
+- A feed that answers HTTP 429 (rate limited) is skipped for 30 min (doubling up to 6 h, or the feed's Retry-After). That never counts as a failure or alerts the mod log.
+- With a key, the Monday weekly digest starts with an AI-written recap of the week's top-scored stories.
 
 - **Sources:** OpenAI, Anthropic, Google DeepMind, The Verge AI, TechCrunch AI, VentureBeat AI, Ars Technica AI and MIT Technology Review AI (the `ai_news` list in `data/rss_feeds.json`), plus the digest's `ai` feeds. Anthropic has no official RSS feed, so a community mirror is used.
 - **How it works:** every 20 minutes the bot checks every feed. Each article is saved by its URL, so it's posted **once** per server, even if a feed lists it again or adds tracking codes to the link. Each post shows the title, source, a 1–2 sentence summary, a link and the article's image when there is one.

@@ -491,10 +491,30 @@ class Schedule(commands.Cog):
                 summary.set_footer(text=f"{failed} feed(s) couldn't be loaded this week")
 
             await channel.send(embed=summary)
+            recap = await self.weekly_recap(guild)
+            if recap is not None:
+                await channel.send(embed=recap, allowed_mentions=discord.AllowedMentions.none())
             for embed in embeds:  # one message per category keeps under Discord's 6000-char limit
                 await channel.send(embed=embed)
             logger.info("Posted weekly digest in %s (%d sections, %d feeds failed)", guild, len(embeds), failed)
             return f"Posted the digest in {channel.mention} ({failed} feed(s) failed)."
+
+    async def weekly_recap(self, guild: discord.Guild) -> Optional[discord.Embed]:
+        """AI-written recap of the week's top-scored news (one AI call per week, shared by every server)."""
+        from cogs.news import build_recap  # local import: news is optional
+
+        week = week_key(local_now().date())
+        cache = getattr(self, "_recap_cache", None)
+        if cache is None or cache[0] != week:
+            try:
+                embed = await build_recap(self.db, utc_now() - 7 * 86400, "week", guild.id)
+            except Exception:
+                logger.exception("Could not build the weekly AI recap")
+                embed = None
+            if embed is None:
+                return None  # don't cache a miss: the next server (or next week's run) may succeed
+            self._recap_cache = cache = (week, embed)
+        return cache[1]
 
     async def last_remix_winner(self, guild: discord.Guild) -> str:
         row = await self.db.fetchone(

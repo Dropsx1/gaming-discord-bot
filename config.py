@@ -113,6 +113,7 @@ NEWS_BREAKING_SCORE = _int("NEWS_BREAKING_SCORE", 9)     # AI importance 1-10 at
 NEWS_BREAKING_DAILY_LIMIT = _int("NEWS_BREAKING_DAILY_LIMIT", 3)  # safety cap on breaking posts per day
 NEWS_QUIET_START = _int("NEWS_QUIET_START", 1)  # quiet hours (local time, TIMEZONE): no normal posts
 NEWS_QUIET_END = _int("NEWS_QUIET_END", 7)      # from 1:00 to 6:59; breaking news still posts
+NEWS_DAILY_RECAP_HOUR = _int("NEWS_DAILY_RECAP_HOUR", 18)  # local hour for the optional daily AI recap (/news daily)
 NEWS_MAX_AGE_HOURS = 24                          # never post articles older than this (no flood on first run)
 NEWS_BREAKING_MAX_AGE_HOURS = 6                  # older high-scoring stories post as normal news
 

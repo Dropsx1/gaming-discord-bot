@@ -196,6 +196,37 @@ MIGRATIONS: list[list[str]] = [
         )""",
         "CREATE INDEX idx_news_posts_time ON news_posts (guild_id, kind, posted_at)",
     ],
+    # v8: AI upgrades: per-feature daily spend, chat memory, trivia XP, news duplicates, automod mode/kind
+    [
+        """CREATE TABLE ai_spend (
+            day TEXT NOT NULL,
+            feature TEXT NOT NULL,
+            usd REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, feature)
+        )""",
+        """CREATE TABLE ai_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            scope_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )""",
+        "CREATE INDEX idx_ai_memory_scope ON ai_memory (guild_id, scope_id, created_at)",
+        """CREATE TABLE trivia_scores (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            xp INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            answered INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        )""",
+        "ALTER TABLE news_items ADD COLUMN dup_of TEXT",
+        "ALTER TABLE automod_flags ADD COLUMN mode TEXT NOT NULL DEFAULT 'delete'",
+        "ALTER TABLE automod_flags ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'",
+    ],
 ]
 
 
@@ -368,16 +399,17 @@ class Database:
     async def add_news_items(self, items: list, seen_at: int) -> None:
         """items: utils.news.Article objects. Already-known URLs are ignored."""
         await self.conn.executemany(
-            "INSERT OR IGNORE INTO news_items (url, feed, title, source, summary, image, published_at, score, first_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(a.url, a.feed, a.title, a.source, a.summary, a.image, a.published_at, a.score, seen_at) for a in items],
+            "INSERT OR IGNORE INTO news_items (url, feed, title, source, summary, image, published_at, score, first_seen, "
+            "dup_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(a.url, a.feed, a.title, a.source, a.summary, a.image, a.published_at, a.score, seen_at,
+              getattr(a, "dup_of", None)) for a in items],
         )
         await self.conn.commit()
 
     async def news_candidates(self, guild_id: int, since: int, min_score: Optional[int] = None) -> list[aiosqlite.Row]:
         """Articles published since `since` that this server hasn't had yet, best first."""
         sql = (
-            "SELECT * FROM news_items i WHERE published_at >= ? "
+            "SELECT * FROM news_items i WHERE published_at >= ? AND dup_of IS NULL "
             "AND NOT EXISTS (SELECT 1 FROM news_posts p WHERE p.guild_id = ? AND p.url = i.url)"
         )
         params: list = [since, guild_id]
@@ -417,12 +449,13 @@ class Database:
 
     # ------------------------------------------------------- automod flags
     async def add_flag(
-        self, guild_id: int, channel_id: int, user_id: int, content: str, reason: str, verdict: str
+        self, guild_id: int, channel_id: int, user_id: int, content: str, reason: str, verdict: str,
+        mode: str = "delete", kind: str = "text",
     ) -> int:
         return await self.execute(
-            "INSERT INTO automod_flags (guild_id, channel_id, user_id, content, reason, verdict, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (guild_id, channel_id, user_id, content, reason, verdict, now()),
+            "INSERT INTO automod_flags (guild_id, channel_id, user_id, content, reason, verdict, mode, kind, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, channel_id, user_id, content, reason, verdict, mode, kind, now()),
         )
 
     async def get_flag(self, flag_id: int) -> Optional[aiosqlite.Row]:
@@ -431,3 +464,81 @@ class Database:
     async def mark_flag_undone(self, flag_id: int) -> bool:
         """True if this call undid it (False if it was already undone)."""
         return await self.execute_count("UPDATE automod_flags SET undone = 1 WHERE id = ? AND undone = 0", (flag_id,)) == 1
+
+    # ------------------------------------------------------- AI spend caps
+    async def ai_spend_today(self, day: str) -> dict[str, float]:
+        rows = await self.fetchall("SELECT feature, usd FROM ai_spend WHERE day = ?", (day,))
+        return {r["feature"]: float(r["usd"]) for r in rows}
+
+    async def add_ai_spend(self, day: str, feature: str, usd: float) -> None:
+        await self.execute(
+            "INSERT INTO ai_spend (day, feature, usd) VALUES (?, ?, ?) "
+            "ON CONFLICT (day, feature) DO UPDATE SET usd = usd + excluded.usd",
+            (day, feature, usd),
+        )
+
+    # ---------------------------------------------------------- chat memory
+    async def add_memory(self, guild_id: int, scope_id: int, user_id: int, role: str, content: str) -> None:
+        await self.execute(
+            "INSERT INTO ai_memory (guild_id, scope_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (guild_id, scope_id, user_id, role, content, now()),
+        )
+
+    async def get_memory(self, guild_id: int, scope_id: int, since: int, limit: int) -> list[aiosqlite.Row]:
+        """The newest `limit` messages since `since`, oldest first."""
+        rows = await self.fetchall(
+            "SELECT * FROM ai_memory WHERE guild_id = ? AND scope_id = ? AND created_at >= ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (guild_id, scope_id, since, limit),
+        )
+        return rows[::-1]
+
+    async def clear_memory(self, guild_id: int, scope_id: int) -> int:
+        return await self.execute_count("DELETE FROM ai_memory WHERE guild_id = ? AND scope_id = ?", (guild_id, scope_id))
+
+    async def prune_memory(self, before: int) -> int:
+        return await self.execute_count("DELETE FROM ai_memory WHERE created_at < ?", (before,))
+
+    # ---------------------------------------------------------------- trivia
+    async def add_trivia_result(self, guild_id: int, user_id: int, xp: int, correct: bool) -> None:
+        await self.execute(
+            "INSERT INTO trivia_scores (guild_id, user_id, xp, correct, answered, updated_at) VALUES (?, ?, ?, ?, 1, ?) "
+            "ON CONFLICT (guild_id, user_id) DO UPDATE SET xp = xp + excluded.xp, correct = correct + excluded.correct, "
+            "answered = answered + 1, updated_at = excluded.updated_at",
+            (guild_id, user_id, xp, int(correct), now()),
+        )
+
+    async def trivia_leaderboard(self, guild_id: int, limit: int = 10) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT * FROM trivia_scores WHERE guild_id = ? AND answered > 0 ORDER BY xp DESC, correct DESC, updated_at "
+            "LIMIT ?",
+            (guild_id, limit),
+        )
+
+    async def trivia_score(self, guild_id: int, user_id: int) -> Optional[aiosqlite.Row]:
+        return await self.fetchone("SELECT * FROM trivia_scores WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+
+    # ------------------------------------------------------- automod stats
+    async def automod_stats(self, guild_id: int, since: int) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT verdict, reason, kind, mode, COUNT(*) AS flags, SUM(undone) AS undone FROM automod_flags "
+            "WHERE guild_id = ? AND created_at >= ? GROUP BY verdict, reason, kind, mode ORDER BY flags DESC",
+            (guild_id, since),
+        )
+
+    # --------------------------------------------------- news duplicates
+    async def recent_news_titles(self, since: int) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT url, title, source FROM news_items WHERE published_at >= ? AND dup_of IS NULL", (since,)
+        )
+
+    async def top_news(self, since: int, limit: int = 8, min_score: int = 1) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            "SELECT * FROM news_items WHERE published_at >= ? AND dup_of IS NULL AND score >= ? "
+            "ORDER BY score DESC, published_at DESC LIMIT ?",
+            (since, min_score, limit),
+        )
+
+    async def news_dup_sources(self, url: str) -> list[str]:
+        rows = await self.fetchall("SELECT DISTINCT source FROM news_items WHERE dup_of = ? ORDER BY source", (url,))
+        return [r["source"] for r in rows]

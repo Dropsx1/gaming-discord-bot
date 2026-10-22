@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
 from utils import ai
@@ -34,7 +34,14 @@ IMAGINE_COOLDOWN = 120     # seconds between /imagine per user
 IMAGINE_DAILY_LIMIT = config._int("IMAGINE_DAILY_LIMIT", 5)
 IMAGINE_GUILD_DAILY_CAP = config._int("IMAGINE_GUILD_DAILY_CAP", 50)  # per server; /imagine-cap overrides
 AUTOMOD_USER_COOLDOWN = 10  # seconds between AI checks of the same user's messages (cost guard)
+AUTOMOD_IMAGE_COOLDOWN = 30  # seconds between AI image checks per user (vision calls cost more)
+AUTOMOD_CONTEXT_MESSAGES = 3  # previous messages shown to the AI as context
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/jpg")  # what the vision model accepts
+IMAGE_MAX_BYTES = 20 * 1024 * 1024
+MODES = {0: "delete", 1: "warn"}
 ASK_REPLY_LIMIT = 1800
+ASK_MEMORY_TURNS = max(0, config._int("ASK_MEMORY_TURNS", 6))    # exchanges remembered per channel/thread
+ASK_MEMORY_HOURS = max(1, config._int("ASK_MEMORY_HOURS", 24))   # older messages are forgotten
 
 AI_OFF = "🤖 AI features are switched off on this bot right now. Ask an admin to add an xAI key."
 
@@ -43,7 +50,8 @@ ASK_SYSTEM = (
     "about games, tech, creative projects and general topics clearly and briefly (under 1,500 characters; "
     "short paragraphs or a few bullets). Keep everything safe-for-work and kind. If a request is sexual, "
     "NSFW, hateful, or asks for harmful or illegal help, politely refuse in one sentence and suggest "
-    "something else. Never use @everyone or @here."
+    "something else. Never use @everyone or @here. Earlier messages in this conversation may come from different "
+    "members; each user message starts with their name."
 )
 
 # --------------------------------------------------------------- filtering
@@ -92,6 +100,18 @@ def prefilter(content: str, mentions: int, level: int) -> Optional[str]:
         if pattern.search(content):
             return reason
     return spam_reason(content, mentions, level)
+
+
+def checkable_images(message) -> list:
+    """PNG/JPEG attachments the vision model can check."""
+    out = []
+    for att in getattr(message, "attachments", None) or []:
+        ctype = (getattr(att, "content_type", "") or "").split(";")[0].lower()
+        name = (getattr(att, "filename", "") or "").lower()
+        if (ctype in IMAGE_TYPES or name.endswith((".png", ".jpg", ".jpeg"))) and \
+                (getattr(att, "size", 0) or 0) <= IMAGE_MAX_BYTES:
+            out.append(att)
+    return out
 
 
 def nsfw_prompt(prompt: str) -> bool:
@@ -204,6 +224,9 @@ class _FlagButton(discord.ui.DynamicItem[discord.ui.Button], template=r"automod:
             return
         channel = guild.get_channel_or_thread(flag["channel_id"])
         restored = False
+        warn_only = (flag["mode"] if "mode" in flag.keys() else "delete") == "warn"
+        if warn_only:
+            channel = None  # the message was never deleted: just record the false positive
         if channel is not None:
             embed = discord.Embed(description=trim(flag["content"], 4000), color=discord.Color.light_grey())
             member = guild.get_member(flag["user_id"])
@@ -218,6 +241,7 @@ class _FlagButton(discord.ui.DynamicItem[discord.ui.Button], template=r"automod:
         logger.info("%s undid automod flag %s in %s", interaction.user, flag["id"], guild)
         await interaction.response.send_message(
             "↩️ Undone: " + ("the message was re-posted in its channel." if restored
+                             else "marked as a false positive." if warn_only
                              else "marked as a false positive (I couldn't re-post it)."),
             ephemeral=True,
         )
@@ -265,6 +289,92 @@ def flag_view(flag_id: int) -> discord.ui.View:
     return view
 
 
+BLOCKED = "🚫 That prompt isn't allowed here. Keep it safe-for-work, please!"
+ENHANCE_MAX_WORDS = 20  # longer prompts are already detailed: used as written
+STYLES = {
+    "none": "",
+    "anime": "anime style, cel shading, vibrant colors, expressive characters",
+    "pixel art": "16-bit pixel art, crisp pixels, limited retro palette",
+    "cinematic": "cinematic film still, dramatic lighting, shallow depth of field, anamorphic lens",
+    "logo": "clean vector logo, flat design, simple shapes, centered on a plain background",
+    "poster": "bold illustrated poster, strong composition, graphic typography space",
+    "3d": "3D render, soft global illumination, detailed materials, octane style",
+}
+STYLE_LABELS = {"none": "", "anime": "Anime", "pixel art": "Pixel art", "cinematic": "Cinematic", "logo": "Logo",
+                "poster": "Poster", "3d": "3D"}
+
+
+def build_prompt(prompt: str, style: str) -> str:
+    hint = STYLES.get(style, "")
+    return f"{prompt}, {hint}" if hint else prompt
+
+
+class Responder:
+    """Send replies the same way from a command (Context) or a button/modal (Interaction)."""
+
+    def __init__(self, ctx=None, interaction=None):
+        self.ctx, self.interaction = ctx, interaction
+
+    async def defer(self):
+        if self.ctx is not None:
+            await self.ctx.defer()
+        elif not self.interaction.response.is_done():
+            await self.interaction.response.defer(thinking=True)
+
+    async def send(self, content=None, ephemeral: bool = False, **kw):
+        if self.ctx is not None:
+            return await self.ctx.send(content, ephemeral=ephemeral, **kw)
+        if not self.interaction.response.is_done():
+            return await self.interaction.response.send_message(content, ephemeral=ephemeral, **kw)
+        return await self.interaction.followup.send(content, ephemeral=ephemeral, **kw)
+
+
+class RemixModal(discord.ui.Modal, title="Remix this image"):
+    def __init__(self, view: "ImagineView"):
+        super().__init__(timeout=600)
+        self.view = view
+        self.prompt = discord.ui.TextInput(label="Prompt", default=trim(view.prompt, 500), max_length=500,
+                                           style=discord.TextStyle.paragraph)
+        self.add_item(self.prompt)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        v = self.view
+        await v.cog.make_image(Responder(interaction=interaction), interaction.guild, interaction.channel,
+                               interaction.user, str(self.prompt.value), v.style, v.aspect_ratio, v.enhance)
+
+
+class ImagineView(discord.ui.View):
+    """Variation (same checked prompt, new image) and Remix (edit the prompt; full safety checks again).
+    Both use the clicker's own cooldown and daily limits. Works for 30 minutes."""
+
+    def __init__(self, cog: "AIFeatures", prompt: str, style: str, aspect_ratio: str, enhance: bool, final: str):
+        super().__init__(timeout=1800)
+        self.cog, self.prompt, self.style, self.aspect_ratio, self.enhance, self.final = (
+            cog, prompt, style, aspect_ratio, enhance, final)
+
+    @discord.ui.button(label="Variation", style=discord.ButtonStyle.secondary, emoji="🔁")
+    async def variation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.make_image(Responder(interaction=interaction), interaction.guild, interaction.channel,
+                                  interaction.user, self.prompt, self.style, self.aspect_ratio, self.enhance,
+                                  final=self.final)
+
+    @discord.ui.button(label="Remix", style=discord.ButtonStyle.secondary, emoji="🎛️")
+    async def remix(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RemixModal(self))
+
+
+class ContinueView(discord.ui.View):
+    """"Continue in thread" under an /ask answer (not persistent: works for 30 minutes)."""
+
+    def __init__(self, cog: "AIFeatures", question: str):
+        super().__init__(timeout=1800)
+        self.cog, self.question = cog, question
+
+    @discord.ui.button(label="Continue in thread", style=discord.ButtonStyle.secondary, emoji="🧵")
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.continue_in_thread(interaction, self.question)
+
+
 # ------------------------------------------------------------------------ cog
 class AIFeatures(commands.Cog):
     """/ask, /imagine, AI auto-moderation and usage tracking."""
@@ -274,32 +384,77 @@ class AIFeatures(commands.Cog):
         self.ask_cd = Cooldowns(ASK_COOLDOWN)
         self.imagine_cd = Cooldowns(IMAGINE_COOLDOWN)
         self.automod_cd = Cooldowns(AUTOMOD_USER_COOLDOWN)
+        self.image_cd = Cooldowns(AUTOMOD_IMAGE_COOLDOWN)
 
     async def cog_load(self):
         self.bot.add_dynamic_items(_FlagButton)
+        self.prune_loop.start()
 
     async def cog_unload(self):
         self.bot.remove_dynamic_items(_FlagButton)
+        self.prune_loop.cancel()
+
+    @tasks.loop(hours=1)
+    async def prune_loop(self):
+        try:
+            removed = await self.bot.db.prune_memory(int(time.time()) - ASK_MEMORY_HOURS * 3600)
+            if removed:
+                logger.info("Forgot %d expired /ask memory message(s)", removed)
+        except Exception:
+            logger.exception("Could not prune /ask memory")
 
     # ---------------------------------------------------------------- /ask
-    async def ask_block(self, ctx: commands.Context) -> Optional[str]:
-        """Why this /ask can't run now, or None."""
+    async def ask_block(self, ctx_or_guild, channel=None, author=None) -> Optional[str]:
+        """Why this /ask (or @mention chat) can't run now, or None. Pass a Context, or (guild, channel, author)."""
+        if channel is None:
+            guild, channel, author = ctx_or_guild.guild, ctx_or_guild.channel, ctx_or_guild.author
+        else:
+            guild = ctx_or_guild
         if not ai.key_set():
             return AI_OFF
-        allowed = ask_channel(ctx.guild)
+        allowed = ask_channel(guild)
         if allowed is None:
             return "🤖 `/ask` has no channel yet. An admin can set one with `/setup-link key:ASK_CHANNEL_ID`."
-        if not _in(ctx.channel, [allowed]) and not is_staff(ctx.author):
+        if not _in(channel, [allowed]) and not is_staff(author):
             return f"🤖 `/ask` works in {allowed.mention}."
-        wait = self.ask_cd.remaining(ctx.guild.id, ctx.author.id)
+        wait = self.ask_cd.remaining(guild.id, author.id)
         if wait:
             return f"⏳ Slow down! Try `/ask` again in {wait:.0f}s."
-        used = await self.bot.db.count_ai(ctx.guild.id, "ask", day_start(), ctx.author.id)
+        used = await self.bot.db.count_ai(guild.id, "ask", day_start(), author.id)
         if used >= ASK_DAILY_LIMIT:
             return f"📅 You've used all {ASK_DAILY_LIMIT} `/ask` questions for today. They reset at midnight."
         return None
 
-    @commands.hybrid_command(name="ask", description="Ask the bot anything (gaming, tech, creative)")
+    async def memory(self, guild_id: int, scope_id: int) -> list[dict]:
+        if not ASK_MEMORY_TURNS:
+            return []
+        rows = await self.bot.db.get_memory(guild_id, scope_id, int(time.time()) - ASK_MEMORY_HOURS * 3600,
+                                            ASK_MEMORY_TURNS * 2)
+        while rows and rows[0]["role"] != "user":
+            rows = rows[1:]  # always start with a question
+        return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+    async def chat_reply(self, guild, channel, author, question: str) -> Optional[ai.Reply]:
+        """Answer with the channel/thread's recent conversation as context, and remember the exchange."""
+        question = trim(question, 1000)
+        history = await self.memory(guild.id, channel.id)
+        user_turn = f"{author.display_name}: {question}"
+        reply = await ai.converse(history + [{"role": "user", "content": user_turn}],
+                                  ASK_SYSTEM.format(server=guild.name), feature="ask")
+        await self.bot.db.log_ai(guild.id, author.id, "ask", reply.tokens if reply else 0, ok=bool(reply))
+        if reply is not None and ASK_MEMORY_TURNS:
+            await self.bot.db.add_memory(guild.id, channel.id, author.id, "user", user_turn)
+            await self.bot.db.add_memory(guild.id, channel.id, getattr(getattr(self.bot, "user", None), "id", 0),
+                                         "assistant", trim(reply.text, ASK_REPLY_LIMIT))
+        return reply
+
+    def ask_embed(self, author, question: str, text: str) -> discord.Embed:
+        embed = discord.Embed(description=trim(text, ASK_REPLY_LIMIT), color=discord.Color.blurple())
+        embed.set_author(name=trim(f"{author.display_name} asked: {question}", 256), icon_url=author.display_avatar.url)
+        embed.set_footer(text="✨ AI-generated • can be wrong • /ask reset to start over")
+        return embed
+
+    @commands.hybrid_group(name="ask", description="Ask the bot anything (gaming, tech, creative)", fallback="chat")
     @app_commands.describe(question="Your question")
     async def ask(self, ctx: commands.Context, *, question: str):
         if problem := await self.ask_block(ctx):
@@ -308,80 +463,190 @@ class AIFeatures(commands.Cog):
         self.ask_cd.hit(ctx.guild.id, ctx.author.id)
         await ctx.defer()
         question = trim(question, 1000)
-        reply = await ai.chat(question, ASK_SYSTEM.format(server=ctx.guild.name))
-        await self.bot.db.log_ai(ctx.guild.id, ctx.author.id, "ask", reply.tokens if reply else 0, ok=bool(reply))
+        reply = await self.chat_reply(ctx.guild, ctx.channel, ctx.author, question)
         if reply is None:
             self.ask_cd.reset(ctx.guild.id, ctx.author.id)  # our fault, not theirs
             await ctx.send("😵 I couldn't reach the AI just now. Try again in a minute.", ephemeral=True)
             return
-        embed = discord.Embed(description=trim(reply.text, ASK_REPLY_LIMIT), color=discord.Color.blurple())
-        embed.set_author(name=trim(f"{ctx.author.display_name} asked: {question}", 256),
-                         icon_url=ctx.author.display_avatar.url)
-        embed.set_footer(text="✨ AI-generated • can be wrong")
-        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        view = ContinueView(self, question) if isinstance(ctx.channel, discord.TextChannel) else None
+        kwargs = {"view": view} if view else {}
+        await ctx.send(embed=self.ask_embed(ctx.author, question, reply.text),
+                       allowed_mentions=discord.AllowedMentions.none(), **kwargs)
+
+    @ask.command(name="reset", description="Make the bot forget this channel's /ask conversation")
+    async def ask_reset(self, ctx: commands.Context):
+        if isinstance(ctx.channel, discord.TextChannel) and not is_staff(ctx.author) and ask_channel(ctx.guild) != ctx.channel:
+            await ctx.send("🤖 Nothing to reset here.", ephemeral=True)
+            return
+        removed = await self.bot.db.clear_memory(ctx.guild.id, ctx.channel.id)
+        logger.info("%s reset /ask memory in %s (%d messages)", ctx.author, ctx.channel, removed)
+        await ctx.send("🧹 Done: I've forgotten our conversation here. Fresh start!", ephemeral=True)
+
+    async def continue_in_thread(self, interaction: discord.Interaction, question: str) -> None:
+        message = interaction.message
+        if message is None or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("I can only start a thread from a channel.", ephemeral=True)
+            return
+        try:
+            thread = await message.create_thread(name=trim(question, 90) or "AI chat", auto_archive_duration=1440)
+        except discord.HTTPException as e:
+            logger.warning("Could not create /ask thread in %s: %s", interaction.channel, e)
+            await interaction.response.send_message("⚠️ I couldn't create a thread here (I need **Create Public "
+                                                    "Threads**), or one already exists.", ephemeral=True)
+            return
+        # Carry the conversation over so the thread starts with context.
+        for turn in (await self.memory(interaction.guild_id, interaction.channel.id))[-ASK_MEMORY_TURNS * 2:]:
+            await self.bot.db.add_memory(interaction.guild_id, thread.id, interaction.user.id, turn["role"], turn["content"])
+        await interaction.response.send_message(f"🧵 Continue in {thread.mention}!", ephemeral=True)
+        try:
+            await thread.send(f"Keep going here, {interaction.user.mention}: mention me or use `/ask` and I'll remember "
+                              "this conversation. `/ask reset` clears it.",
+                              allowed_mentions=discord.AllowedMentions(users=[interaction.user]))
+        except discord.HTTPException:
+            pass
+
+    # --------------------------------------------------------- @mention chat
+    def mention_question(self, message: discord.Message) -> Optional[str]:
+        """The question in a message that @mentions the bot, or None (not for us / it's a prefix command)."""
+        me = getattr(self.bot, "user", None)
+        if message.guild is None or message.author.bot or message.webhook_id or me is None:
+            return None
+        if not any(u.id == me.id for u in message.mentions):
+            return None
+        text = re.sub(r"\s+", " ", re.sub(rf"<@!?{me.id}>", "", message.content)).strip()
+        first = text.split(maxsplit=1)[0].lower() if text else ""
+        if first and self.bot.get_command(first.lstrip(config.COMMAND_PREFIX)) is not None and \
+                re.match(rf"^\s*<@!?{me.id}>", message.content):
+            return None  # "@bot help" is a prefix command, handled by discord.py
+        return text or None
+
+    @commands.Cog.listener("on_message")
+    async def mention_chat(self, message: discord.Message):
+        question = self.mention_question(message)
+        if question is None:
+            return
+        guild, channel, author = message.guild, message.channel, message.author
+        if not ai.key_set():
+            return
+        problem = await self.ask_block(guild, channel, author)
+        if problem is not None:
+            if problem.startswith(("⏳", "📅")):  # tell them; channel problems stay silent (no spam)
+                try:
+                    await message.reply(problem, delete_after=15, mention_author=False)
+                except discord.HTTPException:
+                    pass
+            return
+        self.ask_cd.hit(guild.id, author.id)
+        async with channel.typing():
+            reply = await self.chat_reply(guild, channel, author, question)
+        if reply is None:
+            self.ask_cd.reset(guild.id, author.id)
+            text = "😵 I couldn't reach the AI just now. Try again in a minute."
+        else:
+            text = trim(reply.text, 1990)
+        try:
+            await message.reply(text, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            logger.warning("Could not reply to a mention in %s: %s", channel, e)
 
     # ------------------------------------------------------------- /imagine
-    async def imagine_block(self, ctx: commands.Context) -> Optional[str]:
+    async def imagine_block(self, ctx_or_guild, channel=None, author=None) -> Optional[str]:
+        if channel is None:
+            guild, channel, author = ctx_or_guild.guild, ctx_or_guild.channel, ctx_or_guild.author
+        else:
+            guild = ctx_or_guild
         if not ai.key_set():
             return AI_OFF
-        allowed = imagine_channels(ctx.guild)
-        if not _in(ctx.channel, allowed):
+        allowed = imagine_channels(guild)
+        if not _in(channel, allowed):
             where = " or ".join(c.mention for c in allowed) or "#ai-art or #bot-commands (run `/setup`)"
             return f"🎨 `/imagine` works in {where}."
-        wait = self.imagine_cd.remaining(ctx.guild.id, ctx.author.id)
+        wait = self.imagine_cd.remaining(guild.id, author.id)
         if wait:
             return f"⏳ Easy, artist! Try `/imagine` again in {wait:.0f}s."
         since = day_start()
-        if await self.bot.db.count_ai(ctx.guild.id, "imagine", since, ctx.author.id) >= IMAGINE_DAILY_LIMIT:
+        if await self.bot.db.count_ai(guild.id, "imagine", since, author.id) >= IMAGINE_DAILY_LIMIT:
             return f"📅 You've made all {IMAGINE_DAILY_LIMIT} images for today. They reset at midnight."
-        cap = setting(ctx.guild, "IMAGINE_DAILY_CAP", IMAGINE_GUILD_DAILY_CAP)
-        if await self.bot.db.count_ai(ctx.guild.id, "imagine", since) >= cap:
+        cap = setting(guild, "IMAGINE_DAILY_CAP", IMAGINE_GUILD_DAILY_CAP)
+        if await self.bot.db.count_ai(guild.id, "imagine", since) >= cap:
             return f"📅 The server has used all {cap} images for today. Back tomorrow!"
         return None
 
-    @commands.hybrid_command(name="imagine", description="Generate an image with AI")
-    @app_commands.describe(prompt="Describe the image (keep it SFW)")
-    async def imagine(self, ctx: commands.Context, *, prompt: str):
-        if problem := await self.imagine_block(ctx):
-            await ctx.send(problem, ephemeral=True)
+    async def make_image(self, out: "Responder", guild, channel, author, prompt: str, style: str = "none",
+                         aspect_ratio: str = "auto", enhance: bool = True, final: Optional[str] = None) -> None:
+        """The whole /imagine pipeline. `final` = an already-checked prompt (Variation button): skips the
+        checks and enhancement but never the limits."""
+        if problem := await self.imagine_block(guild, channel, author):
+            await out.send(problem, ephemeral=True)
             return
         prompt = trim(prompt, 500)
-        if nsfw_prompt(prompt):
-            await ctx.send("🚫 That prompt isn't allowed here. Keep it safe-for-work, please!", ephemeral=True)
-            return
-        self.imagine_cd.hit(ctx.guild.id, ctx.author.id)
-        await ctx.defer()
+        style = style if style in STYLES else "none"
+        enhanced = None
+        if final is None:
+            # Safety first, on what the member typed: keyword filter (free), then the AI check.
+            if nsfw_prompt(prompt):
+                await out.send(BLOCKED, ephemeral=True)
+                return
+            self.imagine_cd.hit(guild.id, author.id)
+            await out.defer()
+            check = await ai.classify(f"Image generation prompt: {prompt}")
+            await self.bot.db.log_ai(guild.id, author.id, "imagine-check", check.tokens if check else 0, ok=bool(check))
+            if check is None:
+                self.imagine_cd.reset(guild.id, author.id)
+                await out.send("😵 I couldn't check that prompt just now. Try again in a minute.", ephemeral=True)
+                return
+            if check.text != "ok":
+                logger.info("Blocked /imagine prompt from %s in %s (%s): %r", author, guild, check.text, prompt)
+                await out.send(BLOCKED, ephemeral=True)
+                return
+            final = build_prompt(prompt, style)
+            if enhance and len(prompt.split()) <= ENHANCE_MAX_WORDS:
+                rewrite = await ai.enhance_prompt(prompt, STYLES[style])
+                await self.bot.db.log_ai(guild.id, author.id, "imagine-enhance", rewrite.tokens if rewrite else 0,
+                                         ok=bool(rewrite))
+                if rewrite is not None and not nsfw_prompt(rewrite.text):
+                    enhanced = final = rewrite.text  # else: keep the member's own (checked) prompt
+        else:
+            self.imagine_cd.hit(guild.id, author.id)
+            await out.defer()
+            enhanced = final if final != build_prompt(prompt, style) else None
 
-        check = await ai.classify(f"Image generation prompt: {prompt}")
-        await self.bot.db.log_ai(ctx.guild.id, ctx.author.id, "imagine-check", check.tokens if check else 0,
-                                 ok=bool(check))
-        if check is None:
-            self.imagine_cd.reset(ctx.guild.id, ctx.author.id)
-            await ctx.send("😵 I couldn't check that prompt just now. Try again in a minute.", ephemeral=True)
-            return
-        if check.text != "ok":
-            logger.info("Blocked /imagine prompt from %s in %s (%s): %r", ctx.author, ctx.guild, check.text, prompt)
-            await ctx.send("🚫 That prompt isn't allowed here. Keep it safe-for-work, please!", ephemeral=True)
-            return
-
-        data = await ai.image(prompt)
-        await self.bot.db.log_ai(ctx.guild.id, ctx.author.id, "imagine", images=1 if data else 0, ok=bool(data))
+        data = await ai.image(final, aspect_ratio)
+        await self.bot.db.log_ai(guild.id, author.id, "imagine", images=1 if data else 0, ok=bool(data))
         if data is None:
-            self.imagine_cd.reset(ctx.guild.id, ctx.author.id)
-            await ctx.send("😵 Image generation failed. Try again in a minute.", ephemeral=True)
+            self.imagine_cd.reset(guild.id, author.id)
+            await out.send("😵 Image generation failed. Try again in a minute.", ephemeral=True)
             return
         ext = "jpg" if data[:3] == b"\xff\xd8\xff" else "png"
         file = discord.File(io.BytesIO(data), filename=f"imagine.{ext}")
         embed = discord.Embed(title="🎨 /imagine", description=trim(prompt, 1000), color=discord.Color.purple())
+        if enhanced:
+            embed.add_field(name="✨ Enhanced prompt", value=trim(enhanced, 1024), inline=False)
         embed.set_image(url=f"attachment://imagine.{ext}")
-        embed.set_footer(text=f"Requested by {ctx.author.display_name} • ✨ AI-generated",
-                         icon_url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed, file=file)
+        details = " • ".join(x for x in (STYLE_LABELS.get(style) if style != "none" else "",
+                                         aspect_ratio if aspect_ratio != "auto" else "") if x)
+        embed.set_footer(text=f"Requested by {author.display_name}" + (f" • {details}" if details else "")
+                              + " • ✨ AI-generated", icon_url=author.display_avatar.url)
+        view = ImagineView(self, prompt, style, aspect_ratio, enhance, final)
+        await out.send(embed=embed, file=file, view=view)
+
+    @commands.hybrid_command(name="imagine", description="Generate an image with AI")
+    @app_commands.describe(prompt="Describe the image (keep it SFW)", style="A style preset (default: none)",
+                           aspect_ratio="Image shape (default: the model picks)",
+                           enhance="Let the AI turn a short prompt into a detailed one (default: on)")
+    async def imagine(self, ctx: commands.Context, *, prompt: str,
+                      style: Literal["none", "anime", "pixel art", "cinematic", "logo", "poster", "3d"] = "none",
+                      aspect_ratio: Literal["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"] = "auto",
+                      enhance: bool = True):
+        await self.make_image(Responder(ctx=ctx), ctx.guild, ctx.channel, ctx.author, prompt, style, aspect_ratio,
+                              enhance)
 
     # ------------------------------------------------------------ automod
     def automod_skip(self, message: discord.Message) -> bool:
         guild = message.guild
-        if guild is None or message.author.bot or message.webhook_id or not message.content:
+        if guild is None or message.author.bot or message.webhook_id:
+            return True
+        if not message.content and not checkable_images(message):
             return True
         if not setting(guild, "AUTOMOD_ENABLED", 0) or not ai.key_set():
             return True
@@ -401,56 +666,112 @@ class AIFeatures(commands.Cog):
             return True
         return False
 
+    async def context_for(self, message: discord.Message) -> list[str]:
+        """The few messages before this one ("name: text"), so the AI sees banter vs. harassment."""
+        lines = []
+        try:
+            async for prev in message.channel.history(limit=AUTOMOD_CONTEXT_MESSAGES, before=message):
+                text = (prev.content or "").strip()
+                if text:
+                    lines.append(f"{getattr(prev.author, 'display_name', 'someone')}: {text[:300]}")
+        except (discord.HTTPException, AttributeError):
+            return []
+        return lines[::-1]
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if self.automod_skip(message):
             return
         guild = message.guild
+        if message.content:
+            flagged = await self.check_text(message)
+            if flagged:
+                return
+        images = checkable_images(message)
+        if images and setting(guild, "AUTOMOD_IMAGES", 0):
+            await self.check_images(message, images)
+
+    async def check_text(self, message: discord.Message) -> bool:
+        guild = message.guild
         level = setting(guild, "AUTOMOD_SENSITIVITY", 2)
         mentions = len(message.raw_mentions) + len(message.raw_role_mentions)
         reason = prefilter(message.content, mentions, level)
         if reason is None:
-            return
+            return False
         if self.automod_cd.remaining(guild.id, message.author.id):
-            return  # cost guard: at most one AI check per user per few seconds
+            return False  # cost guard: at most one AI check per user per few seconds
         self.automod_cd.hit(guild.id, message.author.id)
 
-        check = await ai.classify(message.content)
+        context = await self.context_for(message)
+        check = await ai.classify(message.content, context=context)
         await self.bot.db.log_ai(guild.id, message.author.id, "automod", check.tokens if check else 0, ok=bool(check))
         if check is None or check.text == "ok":
-            return
+            return False
         await self.act_on_flag(message, reason, check.text)
+        return True
 
-    async def act_on_flag(self, message: discord.Message, reason: str, verdict: str) -> None:
+    async def check_images(self, message: discord.Message, images: list) -> bool:
+        guild = message.guild
+        if self.image_cd.remaining(guild.id, message.author.id):
+            return False
+        self.image_cd.hit(guild.id, message.author.id)
+        for att in images[:2]:  # cost guard: at most two images per message
+            check = await ai.classify_image(att.url, message.content or "")
+            await self.bot.db.log_ai(guild.id, message.author.id, "automod-image", check.tokens if check else 0,
+                                     ok=bool(check))
+            if check is not None and check.text != "ok":
+                await self.act_on_flag(message, "image", check.text, kind="image")
+                return True
+        return False
+
+    async def act_on_flag(self, message: discord.Message, reason: str, verdict: str, kind: str = "text") -> None:
         guild, author = message.guild, message.author
-        try:
-            await message.delete()
-            deleted = True
-        except discord.NotFound:
-            deleted = True  # already gone
-        except discord.HTTPException:
-            deleted = False
-        flag_id = await self.bot.db.add_flag(guild.id, message.channel.id, author.id, message.content, reason, verdict)
-        logger.info("Automod flag #%s in %s: %s (%s / %s)", flag_id, guild, author, reason, verdict)
+        mode = MODES.get(setting(guild, "AUTOMOD_MODE", 0), "delete")
+        deleted = False
+        if mode == "delete":
+            try:
+                await message.delete()
+                deleted = True
+            except discord.NotFound:
+                deleted = True  # already gone
+            except discord.HTTPException:
+                deleted = False
+        content = message.content or ""
+        if kind == "image":
+            content = (content + "\n" + "\n".join(a.url for a in checkable_images(message))).strip()
+        flag_id = await self.bot.db.add_flag(guild.id, message.channel.id, author.id, content, reason, verdict,
+                                             mode=mode, kind=kind)
+        logger.info("Automod flag #%s in %s: %s (%s / %s, %s)", flag_id, guild, author, reason, verdict, mode)
 
         try:
-            await author.send(
-                f"⚠️ Your message in **{guild.name}** was removed by auto-moderation ({verdict}). "
-                "Please keep chat friendly and safe-for-work. If this was a mistake, staff can restore it."
-            )
+            if mode == "warn":
+                await author.send(
+                    f"⚠️ Heads up: your message in **{guild.name}** was flagged by auto-moderation ({verdict}). "
+                    "Please keep chat friendly and safe-for-work. Staff have been notified."
+                )
+            else:
+                await author.send(
+                    f"⚠️ Your message in **{guild.name}** was removed by auto-moderation ({verdict}). "
+                    "Please keep chat friendly and safe-for-work. If this was a mistake, staff can restore it."
+                )
             dm = "DM delivered"
         except discord.HTTPException:
             dm = "DM failed (closed DMs)"
 
-        embed = discord.Embed(title="🛡️ AI Auto-moderation", color=discord.Color.red(), timestamp=discord.utils.utcnow())
+        title = "🛡️ AI Auto-moderation" + (" (warn only)" if mode == "warn" else "")
+        embed = discord.Embed(title=title, color=discord.Color.orange() if mode == "warn" else discord.Color.red(),
+                              timestamp=discord.utils.utcnow())
         embed.add_field(name="Member", value=f"{author.mention} (`{author}` • {author.id})", inline=False)
         embed.add_field(name="Channel", value=message.channel.mention, inline=True)
         embed.add_field(name="Pre-filter", value=reason, inline=True)
         embed.add_field(name="AI verdict", value=verdict, inline=True)
-        embed.add_field(name="Message", value=trim(message.content, 1024), inline=False)
+        embed.add_field(name="Message", value=trim(content or "(no text)", 1024), inline=False)
+        if mode == "warn" and getattr(message, "jump_url", None):
+            embed.add_field(name="Jump", value=message.jump_url, inline=False)
         embed.set_thumbnail(url=author.display_avatar.url)
-        embed.set_footer(text=f"Flag #{flag_id} • " + ("deleted" if deleted else "could NOT delete (missing Manage Messages)")
-                         + f" • {dm}")
+        state = ("not deleted (warn-only mode)" if mode == "warn" else
+                 "deleted" if deleted else "could NOT delete (missing Manage Messages)")
+        embed.set_footer(text=f"Flag #{flag_id} • {state} • {dm}")
         channel = gc.channel(guild, "MOD_LOG_CHANNEL_ID")
         if isinstance(channel, discord.abc.Messageable):
             try:
@@ -464,9 +785,11 @@ class AIFeatures(commands.Cog):
     async def automod(self, ctx: commands.Context):
         on = bool(setting(ctx.guild, "AUTOMOD_ENABLED", 0))
         level = SENSITIVITY_NAMES[setting(ctx.guild, "AUTOMOD_SENSITIVITY", 2)]
+        mode = MODES.get(setting(ctx.guild, "AUTOMOD_MODE", 0), "delete")
+        images = "on" if setting(ctx.guild, "AUTOMOD_IMAGES", 0) else "off"
         note = "" if ai.key_set() else "\n⚠️ No xAI key is set, so it can't run until one is added."
-        await ctx.send(f"🛡️ AI auto-moderation is **{'on' if on else 'off'}**, sensitivity **{level}**.{note}",
-                       ephemeral=True)
+        await ctx.send(f"🛡️ AI auto-moderation is **{'on' if on else 'off'}**, sensitivity **{level}**, "
+                       f"mode **{mode}**, image checks **{images}**.{note}", ephemeral=True)
 
     @automod.command(name="on", description="Turn AI auto-moderation on (admin)")
     @commands.has_permissions(administrator=True)
@@ -496,6 +819,58 @@ class AIFeatures(commands.Cog):
         await gc.set_many(ctx.guild, {"AUTOMOD_SENSITIVITY": SENSITIVITY_VALUES[level]})
         logger.info("%s set automod sensitivity to %s in %s", ctx.author, level, ctx.guild)
         await ctx.send(f"🛡️ Auto-moderation sensitivity is now **{level}**.", ephemeral=True)
+
+    @automod.command(name="mode", description="delete flagged messages, or warn only (admin)")
+    @app_commands.describe(mode="delete: remove + DM + log · warn: keep the message, DM a warning + log")
+    @commands.has_permissions(administrator=True)
+    async def automod_mode(self, ctx: commands.Context, mode: Literal["delete", "warn"]):
+        await gc.set_many(ctx.guild, {"AUTOMOD_MODE": 1 if mode == "warn" else 0})
+        logger.info("%s set automod mode to %s in %s", ctx.author, mode, ctx.guild)
+        text = ("flagged messages stay up; the author gets a warning DM and staff get the flag in the mod log."
+                if mode == "warn" else "flagged messages are deleted, the author gets a DM and staff can Undo.")
+        await ctx.send(f"🛡️ Auto-moderation mode is now **{mode}**: {text}", ephemeral=True)
+
+    @automod.command(name="images", description="Check posted images with the AI vision model (admin)")
+    @commands.has_permissions(administrator=True)
+    async def automod_images(self, ctx: commands.Context, enabled: Literal["on", "off"]):
+        await gc.set_many(ctx.guild, {"AUTOMOD_IMAGES": int(enabled == "on")})
+        logger.info("%s turned automod image checks %s in %s", ctx.author, enabled, ctx.guild)
+        msg = f"🖼️ AI image checks are **{enabled}**."
+        if enabled == "on":
+            msg += (f" PNG/JPEG uploads are checked with `{ai.XAI_VISION_MODEL}` (max 2 per message, one check per "
+                    f"member every {AUTOMOD_IMAGE_COOLDOWN}s). Automod itself must be on too.")
+        await ctx.send(msg, ephemeral=True)
+
+    @automod.command(name="stats", description="Automod flags and how many staff undid (false positives) (admin)")
+    @app_commands.describe(days="How many days back (default 30)")
+    @commands.has_permissions(administrator=True)
+    async def automod_stats(self, ctx: commands.Context, days: commands.Range[int, 1, 365] = 30):
+        rows = await self.bot.db.automod_stats(ctx.guild.id, int(time.time()) - int(days) * 86400)
+        embed = discord.Embed(title=f"🛡️ Automod stats: last {days} day(s)", color=discord.Color.blurple())
+        total = sum(r["flags"] for r in rows)
+        undone = sum(r["undone"] or 0 for r in rows)
+        if not total:
+            embed.description = "No flags yet."
+        else:
+            rate = undone / total * 100
+            embed.description = (f"**{total}** flag(s), **{undone}** undone by staff (**{rate:.0f}%** false positives)."
+                                 + ("\nTip: lots of Undo clicks? Try `/automod sensitivity low` or `/automod mode warn`."
+                                    if total >= 5 and rate >= 30 else ""))
+            by_reason: dict[str, list[int]] = {}
+            by_verdict: dict[str, list[int]] = {}
+            for r in rows:
+                for bucket, key in ((by_reason, f"{r['reason']}" + (" (image)" if r["kind"] == "image" else "")),
+                                    (by_verdict, r["verdict"])):
+                    entry = bucket.setdefault(key, [0, 0])
+                    entry[0] += r["flags"]
+                    entry[1] += r["undone"] or 0
+
+            def fmt(bucket):
+                return "\n".join(f"**{k}**: {n} flag(s), {u} undone ({u / n * 100:.0f}%)"
+                                 for k, (n, u) in sorted(bucket.items(), key=lambda kv: -kv[1][0]))
+            embed.add_field(name="By pre-filter reason", value=trim(fmt(by_reason), 1024), inline=False)
+            embed.add_field(name="By AI verdict", value=trim(fmt(by_verdict), 1024), inline=False)
+        await ctx.send(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------- admin: usage
     @commands.hybrid_command(name="imagine-cap", description="Set the server-wide daily /imagine limit (admin)")
@@ -533,7 +908,10 @@ class AIFeatures(commands.Cog):
                    f"{cap}/day for the server\nAutomod: {on}"),
             inline=False,
         )
-        embed.set_footer(text=f"Models: {ai.XAI_FAST_MODEL} (text), {ai.XAI_IMAGE_MODEL} (images) • days reset at "
+        caps = ", ".join(f"{f} ${ai.spend.spent(f):.2f}/{c:g}" for f, c in sorted(ai.CAPS.items()) if ai.spend.spent(f))
+        embed.add_field(name="Spend today (USD, whole bot, est.)", value=trim(caps or "Nothing yet.", 1024), inline=False)
+        embed.set_footer(text=f"Models: {ai.XAI_SMART_MODEL} (chat), {ai.XAI_FAST_MODEL} (fast), "
+                              f"{ai.XAI_IMAGE_MODEL} (images) • days reset at "
                               f"midnight {config.TIMEZONE}")
         await ctx.send(embed=embed, ephemeral=True)
 

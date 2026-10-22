@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+from utils import ai, summaries
 from utils import guildconfig as gc
 from utils.helpers import is_staff, send_log, staff_only
 
@@ -82,14 +83,20 @@ class CloseConfirmView(discord.ui.View):
         super().__init__(timeout=60)
         self.cog = cog
         self.user = user
+        if not (is_staff(user) and ai.key_set()):
+            self.remove_item(self.with_summary)  # AI summary on close: staff only, needs the xAI key
 
-    async def _go(self, interaction: discord.Interaction, transcript: bool):
+    async def _go(self, interaction: discord.Interaction, transcript: bool, summarize: bool = False):
         await interaction.response.edit_message(content="🔒 Closing…", view=None)
-        await self.cog.close(interaction.channel, interaction.user, transcript=transcript)
+        await self.cog.close(interaction.channel, interaction.user, transcript=transcript, summarize=summarize)
 
     @discord.ui.button(label="Close + transcript", style=discord.ButtonStyle.red, emoji="📄")
     async def with_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._go(interaction, True)
+
+    @discord.ui.button(label="Close + transcript + AI summary", style=discord.ButtonStyle.red, emoji="📝")
+    async def with_summary(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._go(interaction, True, summarize=is_staff(interaction.user))
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.grey)
     async def without_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -107,6 +114,7 @@ class Tickets(commands.Cog):
         self.bot = bot
         self._creating: set[int] = set()
         self._closing: set[int] = set()
+        self._category_lock = asyncio.Lock()
         bot.add_view(TicketPanelView(self))
         bot.add_view(TicketControlView(self))
 
@@ -120,11 +128,44 @@ class Tickets(commands.Cog):
                 return ch
         return None
 
+    async def ensure_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
+        """The ticket category. If TICKET_CATEGORY_ID is missing (or deleted), reuse a category named "Tickets"
+        or create a private one, and save it for this server."""
+        category = gc.channel(guild, "TICKET_CATEGORY_ID")
+        if isinstance(category, discord.CategoryChannel):
+            return category
+        async with self._category_lock:
+            category = gc.channel(guild, "TICKET_CATEGORY_ID")
+            if isinstance(category, discord.CategoryChannel):
+                return category
+            category = discord.utils.find(lambda c: c.name.casefold() == "tickets", guild.categories)
+            if category is None:
+                staff_role = gc.role(guild, "STAFF_ROLE_ID")
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    guild.me: discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, read_message_history=True, manage_channels=True,
+                        manage_permissions=True, embed_links=True, attach_files=True,
+                    ),
+                }
+                if staff_role:
+                    overwrites[staff_role] = discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, read_message_history=True
+                    )
+                try:
+                    category = await guild.create_category("Tickets", overwrites=overwrites,
+                                                           reason="Ticket category was missing")
+                except discord.HTTPException as e:
+                    logger.warning("TICKET_CATEGORY_ID is missing in %s and I couldn't create one: %s", guild, e)
+                    return None
+                logger.info("Created the Tickets category in %s", guild)
+            await gc.set_many(guild, {"TICKET_CATEGORY_ID": category.id})
+            return category
+
     async def open_ticket_for(self, guild: discord.Guild, user: discord.Member) -> str:
         """Create a ticket and return a user-facing status message."""
-        category = gc.channel(guild, "TICKET_CATEGORY_ID")
+        category = await self.ensure_category(guild)
         if not isinstance(category, discord.CategoryChannel):
-            logger.warning("TICKET_CATEGORY_ID is missing or not a category in %s", guild)
             return "⚠️ Tickets aren't configured yet. Please ping staff (they can run `/setup`)."
         if existing := self.find_open_ticket(guild, user.id):
             return f"You already have an open ticket: {existing.mention}"
@@ -222,7 +263,23 @@ class Tickets(commands.Cog):
         data = io.BytesIO("\n".join(lines).encode("utf-8"))
         return discord.File(data, filename=f"transcript-{channel.name}.txt")
 
-    async def close(self, channel: discord.TextChannel, closed_by: discord.abc.User, transcript: bool = True):
+    async def ticket_summary(self, channel: discord.TextChannel, closed_by) -> Optional[discord.Embed]:
+        """AI summary of the ticket for the ticket log (staff option). None if AI is off or it failed."""
+        if not ai.key_set():
+            return None
+        try:
+            summary, used, tokens = await summaries.summarize_channel(channel, summaries.MAX_MESSAGES, "ticket-summary")
+        except discord.HTTPException as e:
+            logger.warning("Could not read #%s for its summary: %s", channel.name, e)
+            return None
+        if used:
+            await self.bot.db.log_ai(channel.guild.id, closed_by.id, "ticket-summary", tokens, ok=summary is not None)
+        if summary is None:
+            return None
+        return summaries.summary_embed(summary, f"📝 Ticket summary: #{channel.name}", used)
+
+    async def close(self, channel: discord.TextChannel, closed_by: discord.abc.User, transcript: bool = True,
+                    summarize: bool = False):
         owner_id = ticket_owner_id(channel)
         if owner_id is None or channel.id in self._closing:
             return
@@ -249,6 +306,9 @@ class Tickets(commands.Cog):
                 except discord.HTTPException as e:
                     logger.warning("Transcript failed for #%s: %s", channel.name, e)
             await send_log(channel.guild, gc.get(channel.guild, "TICKET_LOG_CHANNEL_ID"), log, file=file)
+            if summarize and is_staff(closed_by):
+                if (summary := await self.ticket_summary(channel, closed_by)) is not None:
+                    await send_log(channel.guild, gc.get(channel.guild, "TICKET_LOG_CHANNEL_ID"), summary)
 
             if transcript and config.TICKET_DM_TRANSCRIPT:
                 owner = channel.guild.get_member(owner_id)
@@ -294,8 +354,9 @@ class Tickets(commands.Cog):
             await ctx.send("✅ Ticket panel posted.", ephemeral=True)
 
     @commands.hybrid_command(name="close", description="Close the current ticket")
-    @app_commands.describe(transcript="Save a transcript to the log channel? (default: yes)")
-    async def close_cmd(self, ctx: commands.Context, transcript: bool = True):
+    @app_commands.describe(transcript="Save a transcript to the log channel? (default: yes)",
+                           ai_summary="Staff: also post an AI summary of the ticket to the ticket log")
+    async def close_cmd(self, ctx: commands.Context, transcript: bool = True, ai_summary: bool = False):
         owner_id = ticket_owner_id(ctx.channel)
         if owner_id is None:
             await ctx.send("This isn't a ticket channel.", ephemeral=True)
@@ -305,7 +366,7 @@ class Tickets(commands.Cog):
             return
         if ctx.interaction:
             await ctx.send("🔒 Closing…", ephemeral=True)
-        await self.close(ctx.channel, ctx.author, transcript=transcript)
+        await self.close(ctx.channel, ctx.author, transcript=transcript, summarize=ai_summary and is_staff(ctx.author))
 
     @commands.hybrid_command(name="claim", description="Claim the current ticket (staff)")
     async def claim_cmd(self, ctx: commands.Context):

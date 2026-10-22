@@ -31,6 +31,45 @@ class Article:
     published_at: int     # Unix time; 0 if the feed gave no date
     feed: str             # the feed URL it came from
     score: Optional[int] = None
+    dup_of: Optional[str] = None  # URL of the same story from another outlet (merged: never posted itself)
+
+
+_STOP = set("""the a an and or of to in on for with at by from as is are was were be been it its this that these those
+new now how why what who will can has have had into over after about more than just your you our their his her not
+says said say report reports""".split())
+_WORD = re.compile(r"[a-z0-9][a-z0-9.+-]*")
+
+
+def title_tokens(title: str) -> set[str]:
+    words = _WORD.findall(plain_text(title).lower().replace("’", "'"))
+    return {w.strip(".-+") for w in words if len(w.strip(".-+")) >= 3 and w not in _STOP}
+
+
+def same_story(a: str, b: str) -> bool:
+    """Two headlines about the same story (cross-outlet duplicates)."""
+    ta, tb = title_tokens(a), title_tokens(b)
+    if not ta or not tb:
+        return False
+    shared = len(ta & tb)
+    if shared < 3:
+        return False
+    return shared / len(ta | tb) >= 0.5 or shared / min(len(ta), len(tb)) >= 0.8
+
+
+def merge_duplicates(new: list, recent: list) -> int:
+    """Mark new articles that repeat a story from a *different* outlet (already stored in `recent` rows with
+    url/title/source, or earlier in `new`) with dup_of = the first one's URL. Returns how many were merged."""
+    keepers: list[tuple[str, str, str]] = [(r["url"], r["title"], r["source"]) for r in recent]
+    merged = 0
+    for a in sorted(new, key=lambda x: (x.published_at or 0, x.url)):
+        match = next((url for url, title, source in keepers
+                      if source.casefold() != a.source.casefold() and same_story(a.title, title)), None)
+        if match:
+            a.dup_of = match
+            merged += 1
+        else:
+            keepers.append((a.url, a.title, a.source))
+    return merged
 
 
 def canonical_url(url: str) -> str:
