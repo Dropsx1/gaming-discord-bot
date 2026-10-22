@@ -31,6 +31,7 @@ COGS = [
     "cogs.schedule",
     "cogs.giveaways",
     "cogs.ai_features",
+    "cogs.ai_extras",
     "cogs.news",
 ]
 
