@@ -6,7 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
-from utils import guildconfig
+from utils import ai, guildconfig
 from utils.db import Database
 
 logging.basicConfig(
@@ -60,6 +60,7 @@ class GamingBot(commands.Bot):
         self.add_check(self._guild_only)
         await self.db.connect()  # before cogs, so they can use self.bot.db
         await guildconfig.init(self.db)  # per-server IDs saved by /setup
+        await ai.set_store(self.db)  # per-feature daily AI cost caps survive restarts
         self._synced_guilds: set[int] = set()
 
         for cog in COGS:
