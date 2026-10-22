@@ -114,6 +114,7 @@ class Tickets(commands.Cog):
         self.bot = bot
         self._creating: set[int] = set()
         self._closing: set[int] = set()
+        self._category_lock = asyncio.Lock()
         bot.add_view(TicketPanelView(self))
         bot.add_view(TicketControlView(self))
 
@@ -127,11 +128,44 @@ class Tickets(commands.Cog):
                 return ch
         return None
 
+    async def ensure_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
+        """The ticket category. If TICKET_CATEGORY_ID is missing (or deleted), reuse a category named "Tickets"
+        or create a private one, and save it for this server."""
+        category = gc.channel(guild, "TICKET_CATEGORY_ID")
+        if isinstance(category, discord.CategoryChannel):
+            return category
+        async with self._category_lock:
+            category = gc.channel(guild, "TICKET_CATEGORY_ID")
+            if isinstance(category, discord.CategoryChannel):
+                return category
+            category = discord.utils.find(lambda c: c.name.casefold() == "tickets", guild.categories)
+            if category is None:
+                staff_role = gc.role(guild, "STAFF_ROLE_ID")
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    guild.me: discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, read_message_history=True, manage_channels=True,
+                        manage_permissions=True, embed_links=True, attach_files=True,
+                    ),
+                }
+                if staff_role:
+                    overwrites[staff_role] = discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, read_message_history=True
+                    )
+                try:
+                    category = await guild.create_category("Tickets", overwrites=overwrites,
+                                                           reason="Ticket category was missing")
+                except discord.HTTPException as e:
+                    logger.warning("TICKET_CATEGORY_ID is missing in %s and I couldn't create one: %s", guild, e)
+                    return None
+                logger.info("Created the Tickets category in %s", guild)
+            await gc.set_many(guild, {"TICKET_CATEGORY_ID": category.id})
+            return category
+
     async def open_ticket_for(self, guild: discord.Guild, user: discord.Member) -> str:
         """Create a ticket and return a user-facing status message."""
-        category = gc.channel(guild, "TICKET_CATEGORY_ID")
+        category = await self.ensure_category(guild)
         if not isinstance(category, discord.CategoryChannel):
-            logger.warning("TICKET_CATEGORY_ID is missing or not a category in %s", guild)
             return "⚠️ Tickets aren't configured yet. Please ping staff (they can run `/setup`)."
         if existing := self.find_open_ticket(guild, user.id):
             return f"You already have an open ticket: {existing.mention}"

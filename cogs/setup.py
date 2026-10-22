@@ -200,6 +200,13 @@ class SetupRunner:
         """Find everything that already exists, before any create call (so rate limits never block reuse)."""
         for spec in ROLES:
             role = self.find_role(spec)
+            if role is not None and spec.key in GRANTED_KEYS and (problem := role_problem(self.guild, spec.key, role)):
+                # The bot hands this role out (e.g. the I accept button). Reusing a role it can't (or
+                # shouldn't) give means MEMBER_ROLE_ID would be saved but never work: make a fresh one instead.
+                self.report.warnings.append(f"Not using @{role.name} for {spec.name}: {problem} Creating a new @{spec.name}.")
+                logger.warning("/setup in %s: skipping @%s for %s (%s)", self.guild, role.name, spec.key, problem)
+                self._claimed.add(role.id)
+                continue
             if role is not None:
                 self._reuse(spec.key, role, f"@{role.name}")
                 if role >= self.me.top_role:
@@ -467,12 +474,13 @@ def role_problem(guild: discord.Guild, key: str, role: discord.Role):
     """Why this role can't be used for `key`, or None if it's fine."""
     if role.is_default():
         return "that's @everyone."
-    if role.managed:
+    if getattr(role, "managed", False):
         return "it's managed by a bot or integration (like a booster or bot role)."
     if key in GRANTED_KEYS:
         if role >= guild.me.top_role:
             return "it's above my highest role, so I can't give it out. Drag my role above it in Server Settings → Roles."
-        risky = [p.replace("_", " ").title() for p in DANGEROUS_PERMS if getattr(role.permissions, p, False)]
+        perms = getattr(role, "permissions", None)
+        risky = [p.replace("_", " ").title() for p in DANGEROUS_PERMS if getattr(perms, p, False)]
         if risky:
             return (
                 "I'd be handing it to anyone who qualifies, and it has moderator permissions ("

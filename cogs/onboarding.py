@@ -39,6 +39,14 @@ class RulesView(discord.ui.View):
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user
         role = gc.role(interaction.guild, "MEMBER_ROLE_ID")
+        if role is None:  # not saved yet: use a role named "Member" (what /setup creates) and remember it
+            role = discord.utils.find(lambda r: r.name.casefold() == "member" and not r.managed,
+                                      getattr(interaction.guild, "roles", []))
+            if role is not None and role < interaction.guild.me.top_role:
+                await gc.set_many(interaction.guild, {"MEMBER_ROLE_ID": role.id})
+                logger.info("Saved @%s as MEMBER_ROLE_ID in %s", role.name, interaction.guild)
+            else:
+                role = None
         if role is None:
             logger.warning("Rules accepted by %s but MEMBER_ROLE_ID is not set or not found", member)
             await interaction.response.send_message(
