@@ -908,7 +908,10 @@ class AIFeatures(commands.Cog):
                    f"{cap}/day for the server\nAutomod: {on}"),
             inline=False,
         )
-        embed.set_footer(text=f"Models: {ai.XAI_FAST_MODEL} (text), {ai.XAI_IMAGE_MODEL} (images) • days reset at "
+        caps = ", ".join(f"{f} ${ai.spend.spent(f):.2f}/{c:g}" for f, c in sorted(ai.CAPS.items()) if ai.spend.spent(f))
+        embed.add_field(name="Spend today (USD, whole bot, est.)", value=trim(caps or "Nothing yet.", 1024), inline=False)
+        embed.set_footer(text=f"Models: {ai.XAI_SMART_MODEL} (chat), {ai.XAI_FAST_MODEL} (fast), "
+                              f"{ai.XAI_IMAGE_MODEL} (images) • days reset at "
                               f"midnight {config.TIMEZONE}")
         await ctx.send(embed=embed, ephemeral=True)
 
