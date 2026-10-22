@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from pathlib import Path
 from collections import deque
 from typing import Optional
 
@@ -18,6 +19,30 @@ logger = logging.getLogger("bot.welcome")
 WELCOME_AI = config._bool("WELCOME_AI", True)  # AI-personalized greeting when XAI_API_KEY is set
 WELCOME_AI_PER_HOUR = 20   # per server; a join raid falls back to the template (cost guard)
 WELCOME_AI_TIMEOUT = 8     # seconds; never hold up the welcome for long
+
+NEON_PINK = discord.Color.from_str("#FF2BD6")
+NEON_CYAN = discord.Color.from_str("#00E5FF")
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+WELCOME_BANNER = ASSETS_DIR / "welcome_banner.jpg"
+
+
+def banner_file(path: Path) -> Optional[discord.File]:
+    """A fresh discord.File for a banner, or None if it's missing (send without the image)."""
+    try:
+        if path.is_file():
+            return discord.File(str(path), filename=path.name)
+    except OSError:
+        logger.warning("Could not open banner %s", path)
+    return None
+
+
+def with_banner(embed: discord.Embed, path: Path) -> dict:
+    """send() kwargs: the embed, plus the attached banner as its image when the file exists."""
+    f = banner_file(path)
+    if f is None:
+        return {"embed": embed}
+    embed.set_image(url=f"attachment://{f.filename}")
+    return {"embed": embed, "file": f}
 
 
 class Welcome(commands.Cog):
@@ -61,22 +86,35 @@ class Welcome(commands.Cog):
             return f"<#{cid}>" if cid else fallback
 
         start_here = link("START_HERE_CHANNEL_ID", "#start-here")
-        roles_ch = link("SELF_ROLES_CHANNEL_ID", "")
+        roles_ch = link("SELF_ROLES_CHANNEL_ID", "#self-roles")
         lfg = link("LFG_CHANNEL_ID", "the LFG channel")
         intro = f"Hey {member.mention}! {greeting}" if greeting else f"Hey {member.mention}, glad you made it!"
+        ai_lines = []
+        for key, fmt in (
+            ("AI_ART_CHANNEL_ID", "• `/imagine` stunning AI art in {}"),
+            ("ASK_CHANNEL_ID", "• `/ask` the AI anything in {}"),
+            ("PROMPT_CHANNEL_ID", "• Daily prompt challenge in {}"),
+            ("NEWS_CHANNEL_ID", "• Breaking AI news in {}"),
+        ):
+            ch = link(key, "")
+            if ch:
+                ai_lines.append(fmt.format(ch))
+        parts = [
+            intro,
+            f"**▶ PRESS START**\nRead the rules in {start_here} and hit **I accept** to unlock the server.",
+            f"**🎮 PICK YOUR PLAYER**\nGrab your platform, game and ping roles in {roles_ch}.",
+        ]
+        if ai_lines:
+            parts.append("**🤖 AI POWER-UPS**\n" + "\n".join(ai_lines))
+        parts.append(f"**🤝 SQUAD UP**\nUse `/lfg` in {lfg} or hop into voice.")
+        parts.append("Keep it chill, keep it SFW. GG! ✨")
         embed = discord.Embed(
-            title=f"Welcome to {member.guild.name}, {member.display_name}! 🎮",
-            description=(
-                f"{intro}\n\n"
-                f"📌 **Start here:** head to {start_here}, read the rules and click **I accept** to unlock the server.\n"
-                f"🎭 **Roles:** pick your platforms, games and interests{' in ' + roles_ch if roles_ch else ''}, plus pings for events and challenges.\n"
-                f"🤝 **LFG:** use `/lfg` in {lfg} to find teammates, or hop into a voice channel.\n\n"
-                f"Have fun and keep it chill. GG!"
-            ),
-            color=discord.Color.green(),
+            title=f"🕹️ Welcome to the Arcade, {member.display_name}!"[:256],
+            description="\n\n".join(parts)[:4096],
+            color=NEON_PINK,
         )
         embed.set_thumbnail(url=member.display_avatar.url)
-        embed.set_footer(text=f"Member #{member.guild.member_count} • SFW gaming community")
+        embed.set_footer(text=f"Player #{member.guild.member_count} • Nexus Arcade • SFW gaming + AI")
         return embed
 
     @commands.Cog.listener()
@@ -106,7 +144,7 @@ class Welcome(commands.Cog):
             return
         try:
             greeting = await self.ai_greeting(member)
-            await channel.send(content=member.mention, embed=self.build_embed(member, greeting),
+            await channel.send(content=member.mention, **with_banner(self.build_embed(member, greeting), WELCOME_BANNER),
                                allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False))
         except discord.HTTPException as e:
             logger.error("Could not send welcome message: %s", e)
@@ -116,7 +154,8 @@ class Welcome(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def welcometest(self, ctx: commands.Context):
         await ctx.defer(ephemeral=True)
-        await ctx.send(embed=self.build_embed(ctx.author, await self.ai_greeting(ctx.author)), ephemeral=True)
+        embed = self.build_embed(ctx.author, await self.ai_greeting(ctx.author))
+        await ctx.send(**with_banner(embed, WELCOME_BANNER), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

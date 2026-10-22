@@ -43,5 +43,39 @@
       "name": "MIT Technology Review",
       "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed"
     }
+  ],
+  "gaming_news": [
+    {
+      "name": "IGN",
+      "url": "https://www.ign.com/rss/articles/feed"
+    },
+    {
+      "name": "GameSpot",
+      "url": "https://www.gamespot.com/feeds/mashup/"
+    },
+    {
+      "name": "Polygon",
+      "url": "https://www.polygon.com/rss/index.xml"
+    },
+    {
+      "name": "PC Gamer",
+      "url": "https://www.pcgamer.com/rss/"
+    },
+    {
+      "name": "Eurogamer",
+      "url": "https://www.eurogamer.net/feed"
+    },
+    {
+      "name": "Rock Paper Shotgun",
+      "url": "https://www.rockpapershotgun.com/feed"
+    },
+    {
+      "name": "VGC",
+      "url": "https://www.videogameschronicle.com/feed/"
+    },
+    {
+      "name": "The Verge",
+      "url": "https://www.theverge.com/rss/games/index.xml"
+    }
   ]
 }

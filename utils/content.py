@@ -53,6 +53,7 @@ def load_items(kind: str) -> list[dict]:
 
 
 NEWS_KEY = "ai_news"  # live AI news feeds ({name, url}); not part of the weekly digest
+GAMING_NEWS_KEY = "gaming_news"  # live gaming news feeds ({name, url}); not part of the weekly digest
 
 
 def _read_feeds() -> dict:
@@ -64,7 +65,7 @@ def load_feeds() -> dict[str, list[str]]:
     """Weekly digest feeds: {category: [url, ...]}."""
     return {
         cat: [u for u in urls if isinstance(u, str) and u.startswith("http")]
-        for cat, urls in _read_feeds().items() if cat != NEWS_KEY
+        for cat, urls in _read_feeds().items() if cat not in (NEWS_KEY, GAMING_NEWS_KEY)
     }
 
 
@@ -80,6 +81,17 @@ def load_news_feeds() -> list[tuple[Optional[str], str]]:
     for url in raw.get("ai", []):
         if isinstance(url, str) and url.startswith("http"):
             feeds.setdefault(url, None)  # name comes from the feed's own title
+    return [(name, url) for url, name in feeds.items()]
+
+
+def load_gaming_news_feeds() -> list[tuple[Optional[str], str]]:
+    """Live gaming news feeds: [(source name or None, url)] from `gaming_news` only."""
+    feeds: dict[str, Optional[str]] = {}
+    for entry in _read_feeds().get(GAMING_NEWS_KEY, []):
+        if isinstance(entry, dict) and str(entry.get("url", "")).startswith("http"):
+            feeds[entry["url"]] = entry.get("name") or None
+        elif isinstance(entry, str) and entry.startswith("http"):
+            feeds[entry] = None
     return [(name, url) for url, name in feeds.items()]
 
 

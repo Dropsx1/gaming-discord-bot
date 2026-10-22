@@ -384,6 +384,8 @@ A channel that posts new AI articles as they come out.
 - **Problems** go to the mod log: a feed that fails 3 checks in a row (it's skipped until it works again), or a post the bot couldn't make (missing permissions). A bad feed never stops the others. The bot needs **Send Messages** and **Embed Links** in the news channel.
 - **Tuning (optional env vars):** `NEWS_POLL_MINUTES` (20), `NEWS_MIN_GAP_MINUTES` (30), `NEWS_DAILY_LIMIT` (12), `NEWS_BREAKING_SCORE` (9), `NEWS_BREAKING_DAILY_LIMIT` (3), `NEWS_QUIET_START` / `NEWS_QUIET_END` (1 / 7).
 
+**Gaming news feed (optional, second independent feed):** `/setup-link key:GAMING_NEWS_CHANNEL_ID channel:#gaming-news` turns it on; optionally `/setup-link key:GAMING_NEWS_PING_ROLE_ID role:@Gaming News` (otherwise a role named **Gaming News** is used) for breaking pings. Sources are `gaming_news` in `data/rss_feeds.json` (IGN, GameSpot, Polygon, PC Gamer, Eurogamer, Rock Paper Shotgun, VGC, The Verge Games). It uses the same limits, quiet hours and breaking threshold as the AI feed, but the AI scores importance for gamers (big releases/reveals, showcases, hardware/price news, outages, studio news) and buries rumors/clickbait. Its articles and limits are tracked separately, so the two feeds never cross-post. Manage it with `/news feed:gaming`, `/news on|off|test feed:gaming`; posts carry a `🎮 Gaming News` footer. If `GAMING_NEWS_CHANNEL_ID` is unset it doesn't run.
+
 ## Troubleshooting
 
 | Problem | Fix |

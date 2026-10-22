@@ -13,6 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.welcome import ASSETS_DIR, NEON_CYAN, with_banner
 from utils import guildconfig as gc
 from utils.content import render
 from utils.helpers import trim
@@ -89,10 +90,10 @@ class Onboarding(commands.Cog):
         except OSError as e:
             await ctx.send(f"⚠️ Couldn't read data/rules.md: {e}", ephemeral=True)
             return
-        embed = discord.Embed(title=trim(title, 256), description=trim(body, 4096), color=discord.Color.green())
+        embed = discord.Embed(title=trim(title, 256), description=trim(body, 4096), color=NEON_CYAN)
         if not gc.get(ctx.guild, "MEMBER_ROLE_ID"):
             await ctx.send("⚠️ Heads up: no Member role is set, so the button won't grant a role yet. Pick one with `/setup-role setting:Member`.", ephemeral=True)
-        await ctx.channel.send(embed=embed, view=RulesView())
+        await ctx.channel.send(**with_banner(embed, ASSETS_DIR / "rules_banner.jpg"), view=RulesView())
         if ctx.interaction:
             await ctx.send("✅ Rules panel posted.", ephemeral=True)
         logger.info("Rules panel posted by %s in #%s", ctx.author, ctx.channel)

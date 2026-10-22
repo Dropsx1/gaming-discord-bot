@@ -105,6 +105,8 @@ DIGEST_HEADLINES_PER_FEED = 3      # newest N per feed (drops to 2 if a section 
 
 # --- Live AI news (/news) --------------------------------------------------------
 NEWS_CHANNEL_ID = _int("NEWS_CHANNEL_ID")       # or /setup-link NEWS_CHANNEL_ID
+GAMING_NEWS_CHANNEL_ID = _int("GAMING_NEWS_CHANNEL_ID")  # or /setup-link GAMING_NEWS_CHANNEL_ID; unset = no gaming feed
+GAMING_NEWS_PING_ROLE_ID = _int("GAMING_NEWS_PING_ROLE_ID")  # pinged on breaking gaming news; default: a role named "Gaming News"
 NEWS_ROLE_ID = _int("NEWS_ROLE_ID")             # pinged on breaking news; default: a role named "AI News"
 NEWS_POLL_MINUTES = max(5, _int("NEWS_POLL_MINUTES", 20))
 NEWS_MIN_GAP_MINUTES = _int("NEWS_MIN_GAP_MINUTES", 30)  # at most 1 normal post per this many minutes
