@@ -34,6 +34,11 @@ IMAGINE_COOLDOWN = 120     # seconds between /imagine per user
 IMAGINE_DAILY_LIMIT = config._int("IMAGINE_DAILY_LIMIT", 5)
 IMAGINE_GUILD_DAILY_CAP = config._int("IMAGINE_GUILD_DAILY_CAP", 50)  # per server; /imagine-cap overrides
 AUTOMOD_USER_COOLDOWN = 10  # seconds between AI checks of the same user's messages (cost guard)
+AUTOMOD_IMAGE_COOLDOWN = 30  # seconds between AI image checks per user (vision calls cost more)
+AUTOMOD_CONTEXT_MESSAGES = 3  # previous messages shown to the AI as context
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/jpg")  # what the vision model accepts
+IMAGE_MAX_BYTES = 20 * 1024 * 1024
+MODES = {0: "delete", 1: "warn"}
 ASK_REPLY_LIMIT = 1800
 ASK_MEMORY_TURNS = max(0, config._int("ASK_MEMORY_TURNS", 6))    # exchanges remembered per channel/thread
 ASK_MEMORY_HOURS = max(1, config._int("ASK_MEMORY_HOURS", 24))   # older messages are forgotten
@@ -95,6 +100,18 @@ def prefilter(content: str, mentions: int, level: int) -> Optional[str]:
         if pattern.search(content):
             return reason
     return spam_reason(content, mentions, level)
+
+
+def checkable_images(message) -> list:
+    """PNG/JPEG attachments the vision model can check."""
+    out = []
+    for att in getattr(message, "attachments", None) or []:
+        ctype = (getattr(att, "content_type", "") or "").split(";")[0].lower()
+        name = (getattr(att, "filename", "") or "").lower()
+        if (ctype in IMAGE_TYPES or name.endswith((".png", ".jpg", ".jpeg"))) and \
+                (getattr(att, "size", 0) or 0) <= IMAGE_MAX_BYTES:
+            out.append(att)
+    return out
 
 
 def nsfw_prompt(prompt: str) -> bool:
@@ -207,6 +224,9 @@ class _FlagButton(discord.ui.DynamicItem[discord.ui.Button], template=r"automod:
             return
         channel = guild.get_channel_or_thread(flag["channel_id"])
         restored = False
+        warn_only = (flag["mode"] if "mode" in flag.keys() else "delete") == "warn"
+        if warn_only:
+            channel = None  # the message was never deleted: just record the false positive
         if channel is not None:
             embed = discord.Embed(description=trim(flag["content"], 4000), color=discord.Color.light_grey())
             member = guild.get_member(flag["user_id"])
@@ -221,6 +241,7 @@ class _FlagButton(discord.ui.DynamicItem[discord.ui.Button], template=r"automod:
         logger.info("%s undid automod flag %s in %s", interaction.user, flag["id"], guild)
         await interaction.response.send_message(
             "↩️ Undone: " + ("the message was re-posted in its channel." if restored
+                             else "marked as a false positive." if warn_only
                              else "marked as a false positive (I couldn't re-post it)."),
             ephemeral=True,
         )
@@ -289,6 +310,7 @@ class AIFeatures(commands.Cog):
         self.ask_cd = Cooldowns(ASK_COOLDOWN)
         self.imagine_cd = Cooldowns(IMAGINE_COOLDOWN)
         self.automod_cd = Cooldowns(AUTOMOD_USER_COOLDOWN)
+        self.image_cd = Cooldowns(AUTOMOD_IMAGE_COOLDOWN)
 
     async def cog_load(self):
         self.bot.add_dynamic_items(_FlagButton)
@@ -514,7 +536,9 @@ class AIFeatures(commands.Cog):
     # ------------------------------------------------------------ automod
     def automod_skip(self, message: discord.Message) -> bool:
         guild = message.guild
-        if guild is None or message.author.bot or message.webhook_id or not message.content:
+        if guild is None or message.author.bot or message.webhook_id:
+            return True
+        if not message.content and not checkable_images(message):
             return True
         if not setting(guild, "AUTOMOD_ENABLED", 0) or not ai.key_set():
             return True
@@ -534,56 +558,112 @@ class AIFeatures(commands.Cog):
             return True
         return False
 
+    async def context_for(self, message: discord.Message) -> list[str]:
+        """The few messages before this one ("name: text"), so the AI sees banter vs. harassment."""
+        lines = []
+        try:
+            async for prev in message.channel.history(limit=AUTOMOD_CONTEXT_MESSAGES, before=message):
+                text = (prev.content or "").strip()
+                if text:
+                    lines.append(f"{getattr(prev.author, 'display_name', 'someone')}: {text[:300]}")
+        except (discord.HTTPException, AttributeError):
+            return []
+        return lines[::-1]
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if self.automod_skip(message):
             return
         guild = message.guild
+        if message.content:
+            flagged = await self.check_text(message)
+            if flagged:
+                return
+        images = checkable_images(message)
+        if images and setting(guild, "AUTOMOD_IMAGES", 0):
+            await self.check_images(message, images)
+
+    async def check_text(self, message: discord.Message) -> bool:
+        guild = message.guild
         level = setting(guild, "AUTOMOD_SENSITIVITY", 2)
         mentions = len(message.raw_mentions) + len(message.raw_role_mentions)
         reason = prefilter(message.content, mentions, level)
         if reason is None:
-            return
+            return False
         if self.automod_cd.remaining(guild.id, message.author.id):
-            return  # cost guard: at most one AI check per user per few seconds
+            return False  # cost guard: at most one AI check per user per few seconds
         self.automod_cd.hit(guild.id, message.author.id)
 
-        check = await ai.classify(message.content)
+        context = await self.context_for(message)
+        check = await ai.classify(message.content, context=context)
         await self.bot.db.log_ai(guild.id, message.author.id, "automod", check.tokens if check else 0, ok=bool(check))
         if check is None or check.text == "ok":
-            return
+            return False
         await self.act_on_flag(message, reason, check.text)
+        return True
 
-    async def act_on_flag(self, message: discord.Message, reason: str, verdict: str) -> None:
+    async def check_images(self, message: discord.Message, images: list) -> bool:
+        guild = message.guild
+        if self.image_cd.remaining(guild.id, message.author.id):
+            return False
+        self.image_cd.hit(guild.id, message.author.id)
+        for att in images[:2]:  # cost guard: at most two images per message
+            check = await ai.classify_image(att.url, message.content or "")
+            await self.bot.db.log_ai(guild.id, message.author.id, "automod-image", check.tokens if check else 0,
+                                     ok=bool(check))
+            if check is not None and check.text != "ok":
+                await self.act_on_flag(message, "image", check.text, kind="image")
+                return True
+        return False
+
+    async def act_on_flag(self, message: discord.Message, reason: str, verdict: str, kind: str = "text") -> None:
         guild, author = message.guild, message.author
-        try:
-            await message.delete()
-            deleted = True
-        except discord.NotFound:
-            deleted = True  # already gone
-        except discord.HTTPException:
-            deleted = False
-        flag_id = await self.bot.db.add_flag(guild.id, message.channel.id, author.id, message.content, reason, verdict)
-        logger.info("Automod flag #%s in %s: %s (%s / %s)", flag_id, guild, author, reason, verdict)
+        mode = MODES.get(setting(guild, "AUTOMOD_MODE", 0), "delete")
+        deleted = False
+        if mode == "delete":
+            try:
+                await message.delete()
+                deleted = True
+            except discord.NotFound:
+                deleted = True  # already gone
+            except discord.HTTPException:
+                deleted = False
+        content = message.content or ""
+        if kind == "image":
+            content = (content + "\n" + "\n".join(a.url for a in checkable_images(message))).strip()
+        flag_id = await self.bot.db.add_flag(guild.id, message.channel.id, author.id, content, reason, verdict,
+                                             mode=mode, kind=kind)
+        logger.info("Automod flag #%s in %s: %s (%s / %s, %s)", flag_id, guild, author, reason, verdict, mode)
 
         try:
-            await author.send(
-                f"⚠️ Your message in **{guild.name}** was removed by auto-moderation ({verdict}). "
-                "Please keep chat friendly and safe-for-work. If this was a mistake, staff can restore it."
-            )
+            if mode == "warn":
+                await author.send(
+                    f"⚠️ Heads up: your message in **{guild.name}** was flagged by auto-moderation ({verdict}). "
+                    "Please keep chat friendly and safe-for-work. Staff have been notified."
+                )
+            else:
+                await author.send(
+                    f"⚠️ Your message in **{guild.name}** was removed by auto-moderation ({verdict}). "
+                    "Please keep chat friendly and safe-for-work. If this was a mistake, staff can restore it."
+                )
             dm = "DM delivered"
         except discord.HTTPException:
             dm = "DM failed (closed DMs)"
 
-        embed = discord.Embed(title="🛡️ AI Auto-moderation", color=discord.Color.red(), timestamp=discord.utils.utcnow())
+        title = "🛡️ AI Auto-moderation" + (" (warn only)" if mode == "warn" else "")
+        embed = discord.Embed(title=title, color=discord.Color.orange() if mode == "warn" else discord.Color.red(),
+                              timestamp=discord.utils.utcnow())
         embed.add_field(name="Member", value=f"{author.mention} (`{author}` • {author.id})", inline=False)
         embed.add_field(name="Channel", value=message.channel.mention, inline=True)
         embed.add_field(name="Pre-filter", value=reason, inline=True)
         embed.add_field(name="AI verdict", value=verdict, inline=True)
-        embed.add_field(name="Message", value=trim(message.content, 1024), inline=False)
+        embed.add_field(name="Message", value=trim(content or "(no text)", 1024), inline=False)
+        if mode == "warn" and getattr(message, "jump_url", None):
+            embed.add_field(name="Jump", value=message.jump_url, inline=False)
         embed.set_thumbnail(url=author.display_avatar.url)
-        embed.set_footer(text=f"Flag #{flag_id} • " + ("deleted" if deleted else "could NOT delete (missing Manage Messages)")
-                         + f" • {dm}")
+        state = ("not deleted (warn-only mode)" if mode == "warn" else
+                 "deleted" if deleted else "could NOT delete (missing Manage Messages)")
+        embed.set_footer(text=f"Flag #{flag_id} • {state} • {dm}")
         channel = gc.channel(guild, "MOD_LOG_CHANNEL_ID")
         if isinstance(channel, discord.abc.Messageable):
             try:
@@ -597,9 +677,11 @@ class AIFeatures(commands.Cog):
     async def automod(self, ctx: commands.Context):
         on = bool(setting(ctx.guild, "AUTOMOD_ENABLED", 0))
         level = SENSITIVITY_NAMES[setting(ctx.guild, "AUTOMOD_SENSITIVITY", 2)]
+        mode = MODES.get(setting(ctx.guild, "AUTOMOD_MODE", 0), "delete")
+        images = "on" if setting(ctx.guild, "AUTOMOD_IMAGES", 0) else "off"
         note = "" if ai.key_set() else "\n⚠️ No xAI key is set, so it can't run until one is added."
-        await ctx.send(f"🛡️ AI auto-moderation is **{'on' if on else 'off'}**, sensitivity **{level}**.{note}",
-                       ephemeral=True)
+        await ctx.send(f"🛡️ AI auto-moderation is **{'on' if on else 'off'}**, sensitivity **{level}**, "
+                       f"mode **{mode}**, image checks **{images}**.{note}", ephemeral=True)
 
     @automod.command(name="on", description="Turn AI auto-moderation on (admin)")
     @commands.has_permissions(administrator=True)
@@ -629,6 +711,58 @@ class AIFeatures(commands.Cog):
         await gc.set_many(ctx.guild, {"AUTOMOD_SENSITIVITY": SENSITIVITY_VALUES[level]})
         logger.info("%s set automod sensitivity to %s in %s", ctx.author, level, ctx.guild)
         await ctx.send(f"🛡️ Auto-moderation sensitivity is now **{level}**.", ephemeral=True)
+
+    @automod.command(name="mode", description="delete flagged messages, or warn only (admin)")
+    @app_commands.describe(mode="delete: remove + DM + log · warn: keep the message, DM a warning + log")
+    @commands.has_permissions(administrator=True)
+    async def automod_mode(self, ctx: commands.Context, mode: Literal["delete", "warn"]):
+        await gc.set_many(ctx.guild, {"AUTOMOD_MODE": 1 if mode == "warn" else 0})
+        logger.info("%s set automod mode to %s in %s", ctx.author, mode, ctx.guild)
+        text = ("flagged messages stay up; the author gets a warning DM and staff get the flag in the mod log."
+                if mode == "warn" else "flagged messages are deleted, the author gets a DM and staff can Undo.")
+        await ctx.send(f"🛡️ Auto-moderation mode is now **{mode}**: {text}", ephemeral=True)
+
+    @automod.command(name="images", description="Check posted images with the AI vision model (admin)")
+    @commands.has_permissions(administrator=True)
+    async def automod_images(self, ctx: commands.Context, enabled: Literal["on", "off"]):
+        await gc.set_many(ctx.guild, {"AUTOMOD_IMAGES": int(enabled == "on")})
+        logger.info("%s turned automod image checks %s in %s", ctx.author, enabled, ctx.guild)
+        msg = f"🖼️ AI image checks are **{enabled}**."
+        if enabled == "on":
+            msg += (f" PNG/JPEG uploads are checked with `{ai.XAI_VISION_MODEL}` (max 2 per message, one check per "
+                    f"member every {AUTOMOD_IMAGE_COOLDOWN}s). Automod itself must be on too.")
+        await ctx.send(msg, ephemeral=True)
+
+    @automod.command(name="stats", description="Automod flags and how many staff undid (false positives) (admin)")
+    @app_commands.describe(days="How many days back (default 30)")
+    @commands.has_permissions(administrator=True)
+    async def automod_stats(self, ctx: commands.Context, days: commands.Range[int, 1, 365] = 30):
+        rows = await self.bot.db.automod_stats(ctx.guild.id, int(time.time()) - int(days) * 86400)
+        embed = discord.Embed(title=f"🛡️ Automod stats: last {days} day(s)", color=discord.Color.blurple())
+        total = sum(r["flags"] for r in rows)
+        undone = sum(r["undone"] or 0 for r in rows)
+        if not total:
+            embed.description = "No flags yet."
+        else:
+            rate = undone / total * 100
+            embed.description = (f"**{total}** flag(s), **{undone}** undone by staff (**{rate:.0f}%** false positives)."
+                                 + ("\nTip: lots of Undo clicks? Try `/automod sensitivity low` or `/automod mode warn`."
+                                    if total >= 5 and rate >= 30 else ""))
+            by_reason: dict[str, list[int]] = {}
+            by_verdict: dict[str, list[int]] = {}
+            for r in rows:
+                for bucket, key in ((by_reason, f"{r['reason']}" + (" (image)" if r["kind"] == "image" else "")),
+                                    (by_verdict, r["verdict"])):
+                    entry = bucket.setdefault(key, [0, 0])
+                    entry[0] += r["flags"]
+                    entry[1] += r["undone"] or 0
+
+            def fmt(bucket):
+                return "\n".join(f"**{k}**: {n} flag(s), {u} undone ({u / n * 100:.0f}%)"
+                                 for k, (n, u) in sorted(bucket.items(), key=lambda kv: -kv[1][0]))
+            embed.add_field(name="By pre-filter reason", value=trim(fmt(by_reason), 1024), inline=False)
+            embed.add_field(name="By AI verdict", value=trim(fmt(by_verdict), 1024), inline=False)
+        await ctx.send(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------- admin: usage
     @commands.hybrid_command(name="imagine-cap", description="Set the server-wide daily /imagine limit (admin)")

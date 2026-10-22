@@ -161,7 +161,7 @@ async def _run_all():
 
     verdicts = {}
 
-    async def fake_classify(text):
+    async def fake_classify(text, context=None, feature="automod"):
         calls.append(("classify", text))
         return ai.Reply(verdicts.get(text, "ok"), 7)
 
