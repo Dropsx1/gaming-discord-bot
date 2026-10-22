@@ -165,11 +165,15 @@ async def _run_all():
         calls.append(("classify", text))
         return ai.Reply(verdicts.get(text, "ok"), 7)
 
-    async def fake_image(prompt):
+    async def fake_image(prompt, aspect_ratio=None):
         calls.append(("image", prompt))
         return b"\x89PNG fake"
 
-    ai.converse, ai.classify, ai.image = fake_chat, fake_classify, fake_image
+    async def no_enhance(prompt, style_hint=""):
+        return None  # enhancement failing falls back to the member's own prompt
+
+    real = (ai.converse, ai.classify, ai.image, ai.enhance_prompt, ai.XAI_API_KEY)
+    ai.converse, ai.classify, ai.image, ai.enhance_prompt = fake_chat, fake_classify, fake_image, no_enhance
     try:
         g = Guild()
         bc, art, general = g.add("bot-commands"), g.add("ai-art"), g.add("general-chat")
@@ -261,6 +265,7 @@ async def _run_all():
         assert rows["ask"]["calls"] == aif.ASK_DAILY_LIMIT and rows["imagine"]["images"] == 1
         assert rows["automod"]["tokens"] == 14 and "imagine-check" in rows
     finally:
+        ai.converse, ai.classify, ai.image, ai.enhance_prompt, ai.XAI_API_KEY = real  # don't leak into other tests
         await db.close()
 
 

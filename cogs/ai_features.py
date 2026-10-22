@@ -289,6 +289,80 @@ def flag_view(flag_id: int) -> discord.ui.View:
     return view
 
 
+BLOCKED = "🚫 That prompt isn't allowed here. Keep it safe-for-work, please!"
+ENHANCE_MAX_WORDS = 20  # longer prompts are already detailed: used as written
+STYLES = {
+    "none": "",
+    "anime": "anime style, cel shading, vibrant colors, expressive characters",
+    "pixel art": "16-bit pixel art, crisp pixels, limited retro palette",
+    "cinematic": "cinematic film still, dramatic lighting, shallow depth of field, anamorphic lens",
+    "logo": "clean vector logo, flat design, simple shapes, centered on a plain background",
+    "poster": "bold illustrated poster, strong composition, graphic typography space",
+    "3d": "3D render, soft global illumination, detailed materials, octane style",
+}
+STYLE_LABELS = {"none": "", "anime": "Anime", "pixel art": "Pixel art", "cinematic": "Cinematic", "logo": "Logo",
+                "poster": "Poster", "3d": "3D"}
+
+
+def build_prompt(prompt: str, style: str) -> str:
+    hint = STYLES.get(style, "")
+    return f"{prompt}, {hint}" if hint else prompt
+
+
+class Responder:
+    """Send replies the same way from a command (Context) or a button/modal (Interaction)."""
+
+    def __init__(self, ctx=None, interaction=None):
+        self.ctx, self.interaction = ctx, interaction
+
+    async def defer(self):
+        if self.ctx is not None:
+            await self.ctx.defer()
+        elif not self.interaction.response.is_done():
+            await self.interaction.response.defer(thinking=True)
+
+    async def send(self, content=None, ephemeral: bool = False, **kw):
+        if self.ctx is not None:
+            return await self.ctx.send(content, ephemeral=ephemeral, **kw)
+        if not self.interaction.response.is_done():
+            return await self.interaction.response.send_message(content, ephemeral=ephemeral, **kw)
+        return await self.interaction.followup.send(content, ephemeral=ephemeral, **kw)
+
+
+class RemixModal(discord.ui.Modal, title="Remix this image"):
+    def __init__(self, view: "ImagineView"):
+        super().__init__(timeout=600)
+        self.view = view
+        self.prompt = discord.ui.TextInput(label="Prompt", default=trim(view.prompt, 500), max_length=500,
+                                           style=discord.TextStyle.paragraph)
+        self.add_item(self.prompt)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        v = self.view
+        await v.cog.make_image(Responder(interaction=interaction), interaction.guild, interaction.channel,
+                               interaction.user, str(self.prompt.value), v.style, v.aspect_ratio, v.enhance)
+
+
+class ImagineView(discord.ui.View):
+    """Variation (same checked prompt, new image) and Remix (edit the prompt; full safety checks again).
+    Both use the clicker's own cooldown and daily limits. Works for 30 minutes."""
+
+    def __init__(self, cog: "AIFeatures", prompt: str, style: str, aspect_ratio: str, enhance: bool, final: str):
+        super().__init__(timeout=1800)
+        self.cog, self.prompt, self.style, self.aspect_ratio, self.enhance, self.final = (
+            cog, prompt, style, aspect_ratio, enhance, final)
+
+    @discord.ui.button(label="Variation", style=discord.ButtonStyle.secondary, emoji="🔁")
+    async def variation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.make_image(Responder(interaction=interaction), interaction.guild, interaction.channel,
+                                  interaction.user, self.prompt, self.style, self.aspect_ratio, self.enhance,
+                                  final=self.final)
+
+    @discord.ui.button(label="Remix", style=discord.ButtonStyle.secondary, emoji="🎛️")
+    async def remix(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RemixModal(self))
+
+
 class ContinueView(discord.ui.View):
     """"Continue in thread" under an /ask answer (not persistent: works for 30 minutes)."""
 
@@ -476,62 +550,96 @@ class AIFeatures(commands.Cog):
             logger.warning("Could not reply to a mention in %s: %s", channel, e)
 
     # ------------------------------------------------------------- /imagine
-    async def imagine_block(self, ctx: commands.Context) -> Optional[str]:
+    async def imagine_block(self, ctx_or_guild, channel=None, author=None) -> Optional[str]:
+        if channel is None:
+            guild, channel, author = ctx_or_guild.guild, ctx_or_guild.channel, ctx_or_guild.author
+        else:
+            guild = ctx_or_guild
         if not ai.key_set():
             return AI_OFF
-        allowed = imagine_channels(ctx.guild)
-        if not _in(ctx.channel, allowed):
+        allowed = imagine_channels(guild)
+        if not _in(channel, allowed):
             where = " or ".join(c.mention for c in allowed) or "#ai-art or #bot-commands (run `/setup`)"
             return f"🎨 `/imagine` works in {where}."
-        wait = self.imagine_cd.remaining(ctx.guild.id, ctx.author.id)
+        wait = self.imagine_cd.remaining(guild.id, author.id)
         if wait:
             return f"⏳ Easy, artist! Try `/imagine` again in {wait:.0f}s."
         since = day_start()
-        if await self.bot.db.count_ai(ctx.guild.id, "imagine", since, ctx.author.id) >= IMAGINE_DAILY_LIMIT:
+        if await self.bot.db.count_ai(guild.id, "imagine", since, author.id) >= IMAGINE_DAILY_LIMIT:
             return f"📅 You've made all {IMAGINE_DAILY_LIMIT} images for today. They reset at midnight."
-        cap = setting(ctx.guild, "IMAGINE_DAILY_CAP", IMAGINE_GUILD_DAILY_CAP)
-        if await self.bot.db.count_ai(ctx.guild.id, "imagine", since) >= cap:
+        cap = setting(guild, "IMAGINE_DAILY_CAP", IMAGINE_GUILD_DAILY_CAP)
+        if await self.bot.db.count_ai(guild.id, "imagine", since) >= cap:
             return f"📅 The server has used all {cap} images for today. Back tomorrow!"
         return None
 
-    @commands.hybrid_command(name="imagine", description="Generate an image with AI")
-    @app_commands.describe(prompt="Describe the image (keep it SFW)")
-    async def imagine(self, ctx: commands.Context, *, prompt: str):
-        if problem := await self.imagine_block(ctx):
-            await ctx.send(problem, ephemeral=True)
+    async def make_image(self, out: "Responder", guild, channel, author, prompt: str, style: str = "none",
+                         aspect_ratio: str = "auto", enhance: bool = True, final: Optional[str] = None) -> None:
+        """The whole /imagine pipeline. `final` = an already-checked prompt (Variation button): skips the
+        checks and enhancement but never the limits."""
+        if problem := await self.imagine_block(guild, channel, author):
+            await out.send(problem, ephemeral=True)
             return
         prompt = trim(prompt, 500)
-        if nsfw_prompt(prompt):
-            await ctx.send("🚫 That prompt isn't allowed here. Keep it safe-for-work, please!", ephemeral=True)
-            return
-        self.imagine_cd.hit(ctx.guild.id, ctx.author.id)
-        await ctx.defer()
+        style = style if style in STYLES else "none"
+        enhanced = None
+        if final is None:
+            # Safety first, on what the member typed: keyword filter (free), then the AI check.
+            if nsfw_prompt(prompt):
+                await out.send(BLOCKED, ephemeral=True)
+                return
+            self.imagine_cd.hit(guild.id, author.id)
+            await out.defer()
+            check = await ai.classify(f"Image generation prompt: {prompt}")
+            await self.bot.db.log_ai(guild.id, author.id, "imagine-check", check.tokens if check else 0, ok=bool(check))
+            if check is None:
+                self.imagine_cd.reset(guild.id, author.id)
+                await out.send("😵 I couldn't check that prompt just now. Try again in a minute.", ephemeral=True)
+                return
+            if check.text != "ok":
+                logger.info("Blocked /imagine prompt from %s in %s (%s): %r", author, guild, check.text, prompt)
+                await out.send(BLOCKED, ephemeral=True)
+                return
+            final = build_prompt(prompt, style)
+            if enhance and len(prompt.split()) <= ENHANCE_MAX_WORDS:
+                rewrite = await ai.enhance_prompt(prompt, STYLES[style])
+                await self.bot.db.log_ai(guild.id, author.id, "imagine-enhance", rewrite.tokens if rewrite else 0,
+                                         ok=bool(rewrite))
+                if rewrite is not None and not nsfw_prompt(rewrite.text):
+                    enhanced = final = rewrite.text  # else: keep the member's own (checked) prompt
+        else:
+            self.imagine_cd.hit(guild.id, author.id)
+            await out.defer()
+            enhanced = final if final != build_prompt(prompt, style) else None
 
-        check = await ai.classify(f"Image generation prompt: {prompt}")
-        await self.bot.db.log_ai(ctx.guild.id, ctx.author.id, "imagine-check", check.tokens if check else 0,
-                                 ok=bool(check))
-        if check is None:
-            self.imagine_cd.reset(ctx.guild.id, ctx.author.id)
-            await ctx.send("😵 I couldn't check that prompt just now. Try again in a minute.", ephemeral=True)
-            return
-        if check.text != "ok":
-            logger.info("Blocked /imagine prompt from %s in %s (%s): %r", ctx.author, ctx.guild, check.text, prompt)
-            await ctx.send("🚫 That prompt isn't allowed here. Keep it safe-for-work, please!", ephemeral=True)
-            return
-
-        data = await ai.image(prompt)
-        await self.bot.db.log_ai(ctx.guild.id, ctx.author.id, "imagine", images=1 if data else 0, ok=bool(data))
+        data = await ai.image(final, aspect_ratio)
+        await self.bot.db.log_ai(guild.id, author.id, "imagine", images=1 if data else 0, ok=bool(data))
         if data is None:
-            self.imagine_cd.reset(ctx.guild.id, ctx.author.id)
-            await ctx.send("😵 Image generation failed. Try again in a minute.", ephemeral=True)
+            self.imagine_cd.reset(guild.id, author.id)
+            await out.send("😵 Image generation failed. Try again in a minute.", ephemeral=True)
             return
         ext = "jpg" if data[:3] == b"\xff\xd8\xff" else "png"
         file = discord.File(io.BytesIO(data), filename=f"imagine.{ext}")
         embed = discord.Embed(title="🎨 /imagine", description=trim(prompt, 1000), color=discord.Color.purple())
+        if enhanced:
+            embed.add_field(name="✨ Enhanced prompt", value=trim(enhanced, 1024), inline=False)
         embed.set_image(url=f"attachment://imagine.{ext}")
-        embed.set_footer(text=f"Requested by {ctx.author.display_name} • ✨ AI-generated",
-                         icon_url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed, file=file)
+        details = " • ".join(x for x in (STYLE_LABELS.get(style) if style != "none" else "",
+                                         aspect_ratio if aspect_ratio != "auto" else "") if x)
+        embed.set_footer(text=f"Requested by {author.display_name}" + (f" • {details}" if details else "")
+                              + " • ✨ AI-generated", icon_url=author.display_avatar.url)
+        view = ImagineView(self, prompt, style, aspect_ratio, enhance, final)
+        await out.send(embed=embed, file=file, view=view)
+
+    @commands.hybrid_command(name="imagine", description="Generate an image with AI")
+    @app_commands.describe(prompt="Describe the image (keep it SFW)", style="A style preset (default: none)",
+                           aspect_ratio="Image shape (default: the model picks)",
+                           enhance="Let the AI turn a short prompt into a detailed one (default: on)")
+    async def imagine(self, ctx: commands.Context, *, prompt: str,
+                      style: Literal["none", "anime", "pixel art", "cinematic", "logo", "poster", "3d"] = "none",
+                      aspect_ratio: Literal["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"] = "auto",
+                      enhance: bool = True):
+        await self.make_image(Responder(ctx=ctx), ctx.guild, ctx.channel, ctx.author, prompt, style, aspect_ratio,
+                              enhance)
 
     # ------------------------------------------------------------ automod
     def automod_skip(self, message: discord.Message) -> bool:
