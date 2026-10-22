@@ -267,9 +267,11 @@ async def _run():
 def test_feed_files():
     assert "ai_news" not in content.load_feeds()  # the weekly digest is unchanged
     names = {n for n, _ in content.load_news_feeds() if n}
-    for source in ("OpenAI", "Anthropic", "Google DeepMind", "The Verge", "TechCrunch", "VentureBeat",
+    for source in ("OpenAI", "Anthropic", "Google DeepMind", "The Verge", "TechCrunch",
                    "Ars Technica", "MIT Technology Review"):
         assert source in names, source
+    assert "VentureBeat" not in names  # removed (feed kept rate-limiting / failing)
+    assert not any("venturebeat" in u for _, u in content.load_news_feeds())
     urls = [u for _, u in content.load_news_feeds()]
     assert len(urls) == len(set(urls))
 

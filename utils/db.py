@@ -399,9 +399,10 @@ class Database:
     async def add_news_items(self, items: list, seen_at: int) -> None:
         """items: utils.news.Article objects. Already-known URLs are ignored."""
         await self.conn.executemany(
-            "INSERT OR IGNORE INTO news_items (url, feed, title, source, summary, image, published_at, score, first_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [(a.url, a.feed, a.title, a.source, a.summary, a.image, a.published_at, a.score, seen_at) for a in items],
+            "INSERT OR IGNORE INTO news_items (url, feed, title, source, summary, image, published_at, score, first_seen, "
+            "dup_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(a.url, a.feed, a.title, a.source, a.summary, a.image, a.published_at, a.score, seen_at,
+              getattr(a, "dup_of", None)) for a in items],
         )
         await self.conn.commit()
 
@@ -537,3 +538,7 @@ class Database:
             "ORDER BY score DESC, published_at DESC LIMIT ?",
             (since, min_score, limit),
         )
+
+    async def news_dup_sources(self, url: str) -> list[str]:
+        rows = await self.fetchall("SELECT DISTINCT source FROM news_items WHERE dup_of = ? ORDER BY source", (url,))
+        return [r["source"] for r in rows]

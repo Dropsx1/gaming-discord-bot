@@ -14,8 +14,8 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, time as dtime
+from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -41,6 +41,25 @@ AI_REVIEWS_PER_POLL = 20      # cost guard: later new articles that poll keep th
 FEED_ALERT_AFTER = 3          # consecutive failed polls before a feed is reported to the mod log
 REPORT_COOLDOWN = 3600        # same problem reported to a server's mod log at most once an hour
 KEEP_DAYS = 30
+BACKOFF_START = 30 * 60       # first wait after an HTTP 429 (unless the feed sends Retry-After)
+BACKOFF_MAX = 6 * 3600        # waits double on repeated 429s up to this
+DUPLICATE_WINDOW_HOURS = 48   # cross-outlet duplicates are merged against stories this recent
+RECAP_MIN_SCORE = 5           # daily/weekly AI recaps use stories scored at least this
+
+
+class FeedRateLimited(Exception):
+    """The feed answered HTTP 429: back off; this is not a failure and never alerts staff."""
+
+    def __init__(self, retry_after: Optional[float]):
+        super().__init__(f"HTTP 429 (retry after {retry_after or '?'}s)")
+        self.retry_after = retry_after
+
+
+def _retry_after(value: Optional[str]) -> Optional[float]:
+    try:
+        return max(0.0, float(value)) if value else None
+    except ValueError:
+        return None  # an HTTP date: use our own backoff
 ROLE_NAME = "AI News"
 
 
@@ -87,7 +106,7 @@ def news_role(guild: discord.Guild) -> Optional[discord.Role]:
     return discord.utils.find(lambda r: normalize_name(r.name) == wanted, guild.roles)
 
 
-def build_embed(row, breaking: bool = False) -> discord.Embed:
+def build_embed(row, breaking: bool = False, also: Optional[list[str]] = None) -> discord.Embed:
     summary = row["summary"] or ""
     link = f"[Read the full story →]({row['url']})"
     embed = discord.Embed(
@@ -97,13 +116,45 @@ def build_embed(row, breaking: bool = False) -> discord.Embed:
         color=discord.Color.red() if breaking else discord.Color.blurple(),
     )
     embed.set_author(name=trim(f"🚨 BREAKING · {row['source']}" if breaking else f"📰 {row['source']}", 256))
-    if row["score"]:
-        embed.set_footer(text=f"AI importance: {row['score']}/10")
+    footer = [f"AI importance: {row['score']}/10"] if row["score"] else []
+    if also:
+        footer.append("Also covered by " + ", ".join(also[:4]))
+    if footer:
+        embed.set_footer(text=trim(" • ".join(footer), 2048))
     if row["image"]:
         embed.set_image(url=row["image"])
     if row["published_at"]:
         embed.timestamp = datetime.fromtimestamp(row["published_at"], _tz())
     return embed
+
+
+async def build_recap(db, since: int, period: str, billed_guild: int, limit: int = 8) -> Optional[discord.Embed]:
+    """AI-written recap of the top-scored stories since `since` ("week" or "day"). None if AI is off,
+    there are no scored stories, or the AI call failed (callers just skip the recap)."""
+    if not ai.key_set():
+        return None
+    rows = await db.top_news(since, limit=limit, min_score=RECAP_MIN_SCORE)
+    if not rows:
+        return None
+    stories = [{"title": r["title"], "source": r["source"], "summary": r["summary"], "score": r["score"]} for r in rows]
+    reply = await ai.news_recap(stories, period)
+    try:
+        await db.log_ai(billed_guild, 0, "digest" if period == "week" else "news-recap",
+                        reply.tokens if reply else 0, ok=bool(reply))
+    except Exception:
+        logger.exception("Could not log AI usage")
+    if reply is None:
+        return None
+    links = "\n".join(f"[{trim(r['title'], 90)}]({r['url']}) · {r['source']}" for r in rows)
+    title = "🤖 AI recap: top stories of the week" if period == "week" else "🤖 AI recap: today's top stories"
+    embed = discord.Embed(title=title, description=trim(reply.text, 3000), color=discord.Color.dark_purple())
+    embed.add_field(name="Read more", value=trim(links, 1024), inline=False)
+    embed.set_footer(text="✨ AI-written from the highest-scored stories • can be wrong")
+    return embed
+
+
+def recap_time():
+    return dtime(min(23, max(0, config.NEWS_DAILY_RECAP_HOUR)), 30, tzinfo=_tz())
 
 
 @dataclass
@@ -113,6 +164,7 @@ class PollResult:
     new: int = 0
     fresh: int = 0
     reviewed: int = 0
+    merged: int = 0
 
 
 class News(commands.Cog):
@@ -121,6 +173,7 @@ class News(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.feed_failures: dict[str, int] = {}
+        self.backoff: dict[str, tuple[float, float]] = {}  # url -> (retry at, last wait) after HTTP 429
         self.reported: dict[tuple[int, str], float] = {}
         self.poll_lock = asyncio.Lock()
         self.post_lock = asyncio.Lock()
@@ -138,9 +191,13 @@ class News(commands.Cog):
             self.dispatch_loop.start()
             logger.info("AI news feed started (poll every %d min)", config.NEWS_POLL_MINUTES)
 
+        if not self.recap_loop.is_running():
+            self.recap_loop.start()
+
     async def cog_unload(self):
         self.poll_loop.cancel()
         self.dispatch_loop.cancel()
+        self.recap_loop.cancel()
 
     def guilds(self) -> list[discord.Guild]:
         return [g for g in self.bot.guilds if news_on(g) and news_channel(g)]
@@ -166,6 +223,8 @@ class News(commands.Cog):
     async def fetch(self, session: aiohttp.ClientSession, name: Optional[str], url: str) -> list[newsfeed.Article]:
         """Articles from one feed, newest first. Raises on any failure (the caller catches it)."""
         async with session.get(url, headers=FEED_HEADERS) as resp:
+            if resp.status == 429:
+                raise FeedRateLimited(_retry_after(resp.headers.get("Retry-After")))
             resp.raise_for_status()
             data = bytearray()
             async for chunk in resp.content.iter_chunked(65536):
@@ -178,11 +237,28 @@ class News(commands.Cog):
             raise ValueError("no articles in the feed" + (f" ({parsed.bozo_exception})" if parsed.get("bozo") else ""))
         return articles
 
+    def back_off(self, url: str, retry_after: Optional[float]) -> float:
+        """Remember a 429: skip the feed until the wait is over. Returns the wait in seconds."""
+        _, last = self.backoff.get(url, (0.0, 0.0))
+        wait = retry_after if retry_after else min(BACKOFF_MAX, max(BACKOFF_START, last * 2))
+        wait = min(BACKOFF_MAX, max(60.0, wait))
+        self.backoff[url] = (now() + wait, wait)
+        return wait
+
     async def fetch_all(self, feeds) -> tuple[list[newsfeed.Article], list[str]]:
+        stamp = now()
+        due = [(n, u) for n, u in feeds if self.backoff.get(u, (0.0, 0.0))[0] <= stamp]
+        skipped = len(feeds) - len(due)
+        if skipped:
+            logger.info("AI news: %d feed(s) backing off after HTTP 429", skipped)
         async with aiohttp.ClientSession(timeout=FEED_TIMEOUT, trust_env=True) as session:
-            results = await asyncio.gather(*(self.fetch(session, n, u) for n, u in feeds), return_exceptions=True)
+            results = await asyncio.gather(*(self.fetch(session, n, u) for n, u in due), return_exceptions=True)
         articles, failed = [], []
-        for (name, url), result in zip(feeds, results):
+        for (name, url), result in zip(due, results):
+            if isinstance(result, FeedRateLimited):
+                wait = self.back_off(url, result.retry_after)
+                logger.info("AI news feed rate-limited (429): %s; trying again in %.0f min", url, wait / 60)
+                continue  # not a failure: no failure count, no mod-log alert
             if isinstance(result, BaseException):
                 failed.append(url)
                 count = self.feed_failures[url] = self.feed_failures.get(url, 0) + 1
@@ -195,6 +271,7 @@ class News(commands.Cog):
                         f"`{url}`\nLast error: `{reason}`\nEdit `data/rss_feeds.json` to change or remove it.",
                     )
             else:
+                self.backoff.pop(url, None)
                 if self.feed_failures.pop(url, 0) >= FEED_ALERT_AFTER:
                     logger.info("AI news feed is working again: %s", url)
                 articles.extend(result)
@@ -236,8 +313,12 @@ class News(commands.Cog):
                         seen_feeds[a.feed] = await self.db.news_feed_seen(a.feed)
                     a.published_at = stamp if seen_feeds[a.feed] else 0
 
+            # Same story from several outlets: keep the first, merge the rest (never reviewed or posted).
+            recent = await self.db.recent_news_titles(stamp - DUPLICATE_WINDOW_HOURS * 3600)
+            result.merged = newsfeed.merge_duplicates(new, recent)
+
             cutoff = stamp - config.NEWS_MAX_AGE_HOURS * 3600
-            fresh = [a for a in new if a.published_at >= cutoff]
+            fresh = [a for a in new if a.published_at >= cutoff and not a.dup_of]
             if fresh and ai.key_set():
                 guilds = self.guilds()
                 billed = guilds[0].id if guilds else 0
@@ -251,8 +332,8 @@ class News(commands.Cog):
             await self.db.prune_news(stamp - KEEP_DAYS * 86400)
             result.new, result.fresh = len(new), len(fresh)
             self.last_poll = result
-            logger.info("AI news poll: %d new (%d recent, %d AI-reviewed), %d/%d feeds failed",
-                        result.new, result.fresh, result.reviewed, len(result.failed), result.feeds)
+            logger.info("AI news poll: %d new (%d recent, %d AI-reviewed, %d duplicates merged), %d/%d feeds failed",
+                        result.new, result.fresh, result.reviewed, result.merged, len(result.failed), result.feeds)
             return result
 
     # --------------------------------------------------------------- posting
@@ -262,7 +343,7 @@ class News(commands.Cog):
         try:
             msg = await channel.send(
                 content=f"🚨 {role.mention}" if role else None,
-                embed=build_embed(row, breaking),
+                embed=build_embed(row, breaking, await self.db.news_dup_sources(row["url"])),
                 allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=[role] if role else False),
             )
         except discord.HTTPException as e:
@@ -331,8 +412,39 @@ class News(commands.Cog):
                 logger.exception("AI news dispatch failed in %s", guild)
                 await self.report(guild, "dispatch", "posting failed", f"`{type(e).__name__}: {e}`"[:500])
 
+    async def post_daily_recap(self, guild: discord.Guild, force: bool = False) -> str:
+        """Optional daily AI recap (/news daily on) in the news channel, once per day."""
+        channel = news_channel(guild)
+        if channel is None:
+            return "No news channel is set."
+        key = f"{guild.id}:{local_now().date().isoformat()}"
+        if not force and await self.db.job_ran("news_daily", key):
+            return "Today's recap was already posted."
+        embed = await build_recap(self.db, int(now()) - 86400, "day", guild.id)
+        if embed is None:
+            return "No recap today (AI is off, or there were no high-scored stories)."
+        try:
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            logger.warning("Could not post the daily AI news recap in %s: %s", guild, e)
+            return f"I couldn't post in {channel.mention}."
+        if not force:
+            await self.db.mark_job("news_daily", key)
+        return f"Posted today's recap in {channel.mention}."
+
+    @tasks.loop(time=recap_time())
+    async def recap_loop(self):
+        for guild in self.guilds():
+            if not gc.saved(guild).get("NEWS_DAILY_RECAP", 0):
+                continue
+            try:
+                await self.post_daily_recap(guild)
+            except Exception:
+                logger.exception("Daily AI news recap failed in %s", guild)
+
     @poll_loop.before_loop
     @dispatch_loop.before_loop
+    @recap_loop.before_loop
     async def _wait_ready(self):
         await self.bot.wait_until_ready()
 
@@ -384,6 +496,23 @@ class News(commands.Cog):
         await gc.set_many(ctx.guild, {"NEWS_ENABLED": 0})
         logger.info("%s turned AI news off in %s", ctx.author, ctx.guild)
         await ctx.send("📰 AI news is **off**. Turn it back on with `/news on`.", ephemeral=True)
+
+    @news.command(name="daily", description="Daily AI-written recap of the top stories on/off (admin)")
+    @app_commands.describe(enabled="on: post a recap every day; off: stop; now: post one now")
+    @commands.has_permissions(manage_guild=True)
+    async def news_daily_cmd(self, ctx: commands.Context, enabled: Literal["on", "off", "now"]):
+        if enabled == "now":
+            await ctx.defer(ephemeral=True)
+            await ctx.send(f"📰 {await self.post_daily_recap(ctx.guild, force=True)}", ephemeral=True)
+            return
+        await gc.set_many(ctx.guild, {"NEWS_DAILY_RECAP": int(enabled == "on")})
+        logger.info("%s turned the daily AI news recap %s in %s", ctx.author, enabled, ctx.guild)
+        msg = f"📰 Daily AI recap is **{enabled}**."
+        if enabled == "on":
+            msg += f" It posts around {config.NEWS_DAILY_RECAP_HOUR}:30 ({config.TIMEZONE}) in the news channel."
+            if not ai.key_set():
+                msg += "\nℹ️ No xAI key, so there's nothing to post until one is added."
+        await ctx.send(msg, ephemeral=True)
 
     @news.command(name="test", description="Post the latest AI news item now (admin)")
     @commands.has_permissions(manage_guild=True)
