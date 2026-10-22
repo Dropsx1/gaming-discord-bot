@@ -71,8 +71,8 @@ async def _run():
 
     # Rules panel title.
     title, body = onboarding.load_rules("Nexus Arcade")
-    assert title == "📜 Nexus Arcade Rules" and "{server}" not in title + body, title
-    assert onboarding.load_rules("Artifi")[0] == "📜 Artifi Rules"
+    assert title == "🛡️ Nexus Arcade — House Rules" and "{server}" not in title + body, title
+    assert onboarding.load_rules("Artifi")[0] == "🛡️ Artifi — House Rules"
 
     # Rendering leaves other braces and non-text fields alone.
     item = content.render_item({"id": 4, "description": "Mascot for {server} {not_a_field}"}, "Nexus Arcade")

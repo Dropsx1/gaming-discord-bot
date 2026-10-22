@@ -227,6 +227,11 @@ MIGRATIONS: list[list[str]] = [
         "ALTER TABLE automod_flags ADD COLUMN mode TEXT NOT NULL DEFAULT 'delete'",
         "ALTER TABLE automod_flags ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'",
     ],
+    # v9: second live news feed (gaming): items and posts are tagged with their feed topic
+    [
+        "ALTER TABLE news_items ADD COLUMN topic TEXT NOT NULL DEFAULT 'ai'",
+        "ALTER TABLE news_posts ADD COLUMN topic TEXT NOT NULL DEFAULT 'ai'",
+    ],
 ]
 
 
@@ -396,49 +401,54 @@ class Database:
     async def news_feed_seen(self, feed: str) -> bool:
         return await self.fetchone("SELECT 1 FROM news_items WHERE feed = ? LIMIT 1", (feed,)) is not None
 
-    async def add_news_items(self, items: list, seen_at: int) -> None:
-        """items: utils.news.Article objects. Already-known URLs are ignored."""
+    async def add_news_items(self, items: list, seen_at: int, topic: str = "ai") -> None:
+        """items: utils.news.Article objects. Already-known URLs are ignored (a URL belongs to one feed topic)."""
         await self.conn.executemany(
             "INSERT OR IGNORE INTO news_items (url, feed, title, source, summary, image, published_at, score, first_seen, "
-            "dup_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "dup_of, topic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(a.url, a.feed, a.title, a.source, a.summary, a.image, a.published_at, a.score, seen_at,
-              getattr(a, "dup_of", None)) for a in items],
+              getattr(a, "dup_of", None), topic) for a in items],
         )
         await self.conn.commit()
 
-    async def news_candidates(self, guild_id: int, since: int, min_score: Optional[int] = None) -> list[aiosqlite.Row]:
-        """Articles published since `since` that this server hasn't had yet, best first."""
+    async def news_candidates(self, guild_id: int, since: int, min_score: Optional[int] = None,
+                              topic: str = "ai") -> list[aiosqlite.Row]:
+        """Articles of this feed topic published since `since` that this server hasn't had yet, best first."""
         sql = (
-            "SELECT * FROM news_items i WHERE published_at >= ? AND dup_of IS NULL "
+            "SELECT * FROM news_items i WHERE published_at >= ? AND dup_of IS NULL AND topic = ? "
             "AND NOT EXISTS (SELECT 1 FROM news_posts p WHERE p.guild_id = ? AND p.url = i.url)"
         )
-        params: list = [since, guild_id]
+        params: list = [since, topic, guild_id]
         if min_score is not None:
             sql += " AND score >= ?"
             params.append(min_score)
         sql += " ORDER BY COALESCE(score, 5) DESC, published_at DESC"
         return await self.fetchall(sql, params)
 
-    async def latest_news(self) -> Optional[aiosqlite.Row]:
-        return await self.fetchone("SELECT * FROM news_items ORDER BY published_at DESC, first_seen DESC LIMIT 1")
+    async def latest_news(self, topic: str = "ai") -> Optional[aiosqlite.Row]:
+        return await self.fetchone("SELECT * FROM news_items WHERE topic = ? ORDER BY published_at DESC, first_seen DESC "
+                                   "LIMIT 1", (topic,))
 
-    async def add_news_post(self, guild_id: int, url: str, kind: str, message_id: Optional[int], posted_at: int) -> None:
+    async def add_news_post(self, guild_id: int, url: str, kind: str, message_id: Optional[int], posted_at: int,
+                            topic: str = "ai") -> None:
         """kind: normal, breaking, test (/news test) or failed (Discord refused it; never retried)."""
         verb = "INSERT OR IGNORE" if kind == "test" else "INSERT OR REPLACE"  # a test never rewrites a real post
         await self.execute(
-            f"{verb} INTO news_posts (guild_id, url, kind, message_id, posted_at) VALUES (?, ?, ?, ?, ?)",
-            (guild_id, url, kind, message_id, posted_at),
+            f"{verb} INTO news_posts (guild_id, url, kind, message_id, posted_at, topic) VALUES (?, ?, ?, ?, ?, ?)",
+            (guild_id, url, kind, message_id, posted_at, topic),
         )
 
-    async def count_news_posts(self, guild_id: int, since: int, kinds: tuple[str, ...]) -> int:
+    async def count_news_posts(self, guild_id: int, since: int, kinds: tuple[str, ...], topic: str = "ai") -> int:
         row = await self.fetchone(
-            f"SELECT COUNT(*) FROM news_posts WHERE guild_id = ? AND posted_at >= ? AND kind IN ({','.join('?' * len(kinds))})",
-            (guild_id, since, *kinds),
+            f"SELECT COUNT(*) FROM news_posts WHERE guild_id = ? AND posted_at >= ? AND topic = ? "
+            f"AND kind IN ({','.join('?' * len(kinds))})",
+            (guild_id, since, topic, *kinds),
         )
         return row[0]
 
-    async def last_news_post(self, guild_id: int, kind: str) -> int:
-        row = await self.fetchone("SELECT MAX(posted_at) FROM news_posts WHERE guild_id = ? AND kind = ?", (guild_id, kind))
+    async def last_news_post(self, guild_id: int, kind: str, topic: str = "ai") -> int:
+        row = await self.fetchone("SELECT MAX(posted_at) FROM news_posts WHERE guild_id = ? AND kind = ? AND topic = ?",
+                                  (guild_id, kind, topic))
         return row[0] or 0
 
     async def prune_news(self, before: int) -> None:
@@ -527,16 +537,17 @@ class Database:
         )
 
     # --------------------------------------------------- news duplicates
-    async def recent_news_titles(self, since: int) -> list[aiosqlite.Row]:
+    async def recent_news_titles(self, since: int, topic: str = "ai") -> list[aiosqlite.Row]:
         return await self.fetchall(
-            "SELECT url, title, source FROM news_items WHERE published_at >= ? AND dup_of IS NULL", (since,)
+            "SELECT url, title, source FROM news_items WHERE published_at >= ? AND dup_of IS NULL AND topic = ?",
+            (since, topic),
         )
 
-    async def top_news(self, since: int, limit: int = 8, min_score: int = 1) -> list[aiosqlite.Row]:
+    async def top_news(self, since: int, limit: int = 8, min_score: int = 1, topic: str = "ai") -> list[aiosqlite.Row]:
         return await self.fetchall(
-            "SELECT * FROM news_items WHERE published_at >= ? AND dup_of IS NULL AND score >= ? "
+            "SELECT * FROM news_items WHERE published_at >= ? AND dup_of IS NULL AND score >= ? AND topic = ? "
             "ORDER BY score DESC, published_at DESC LIMIT ?",
-            (since, min_score, limit),
+            (since, min_score, topic, limit),
         )
 
     async def news_dup_sources(self, url: str) -> list[str]:

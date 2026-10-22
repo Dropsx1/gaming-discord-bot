@@ -46,7 +46,9 @@ async def _welcome(db):
         post = welcome.sent[-1]
         assert prompts == [("Pixel Haven", "Zelda Fan", 42)]
         assert post.embed.description.startswith(f"Hey {m.mention}! Welcome, Zelda Fan, grab your Master Sword!")
-        assert "Start here" in post.embed.description  # the template's guide stays
+        assert "PRESS START" in post.embed.description and "SQUAD UP" in post.embed.description
+        assert post.embed.image.url == "attachment://welcome_banner.jpg" and post.kw["file"].filename == "welcome_banner.jpg"
+        assert "AI POWER-UPS" not in post.embed.description  # no AI channels configured -> section omitted
         assert post.kw["allowed_mentions"].everyone is False
         assert await db.count_ai(g.id, "welcome", 0) == 1
 
@@ -139,10 +141,18 @@ async def _run():
         await db.close()
 
 
+def test_banner_fallback_and_ai_section():
+    e = discord.Embed(title="x")
+    assert welcome_cog.with_banner(e, Path("/nope/missing.jpg")) == {"embed": e} and not e.image.url
+    kw = welcome_cog.with_banner(discord.Embed(), welcome_cog.ASSETS_DIR / "rules_banner.jpg")
+    assert kw["embed"].image.url == "attachment://rules_banner.jpg"
+
+
 def test_welcome_and_setup_fixes():
     asyncio.run(_run())
 
 
 if __name__ == "__main__":
+    test_banner_fallback_and_ai_section()
     test_welcome_and_setup_fixes()
     print("tests/test_welcome_tickets.py: all checks passed")

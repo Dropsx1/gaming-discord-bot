@@ -458,10 +458,12 @@ SETTING_ALIASES = {
     "challenge pings": "CHALLENGE_PING_ROLE_ID", "challenges": "CHALLENGE_PING_ROLE_ID",
     "news": "NEWS_CHANNEL_ID", "ai news": "NEWS_CHANNEL_ID", "news channel": "NEWS_CHANNEL_ID",
     "news role": "NEWS_ROLE_ID", "ai news role": "NEWS_ROLE_ID",
+    "gaming news": "GAMING_NEWS_CHANNEL_ID", "gaming news channel": "GAMING_NEWS_CHANNEL_ID",
+    "gaming news role": "GAMING_NEWS_PING_ROLE_ID", "gaming news ping": "GAMING_NEWS_PING_ROLE_ID",
 }
 # Roles the bot hands to members (by button or as a prize): must be assignable and harmless.
 GRANTED_KEYS = {"MEMBER_ROLE_ID", "PROMPT_KING_ROLE_ID", "REMIX_CHAMPION_ROLE_ID"}
-PING_KEYS = {"LFG_ROLE_ID", "PROMPT_PING_ROLE_ID", "CHALLENGE_PING_ROLE_ID", "NEWS_ROLE_ID"}
+PING_KEYS = {"LFG_ROLE_ID", "PROMPT_PING_ROLE_ID", "CHALLENGE_PING_ROLE_ID", "NEWS_ROLE_ID", "GAMING_NEWS_PING_ROLE_ID"}
 # Never hand these out automatically.
 DANGEROUS_PERMS = (
     "administrator", "manage_guild", "manage_roles", "manage_channels", "manage_webhooks", "manage_messages",
@@ -509,6 +511,8 @@ def _link_catalog() -> dict[str, tuple[str, str]]:
     catalog["ASK_CHANNEL_ID"] = ("/ask channel (defaults to #bot-commands)", "text")
     catalog["NEWS_CHANNEL_ID"] = ("Live AI news channel (/news)", "text")
     catalog["NEWS_ROLE_ID"] = ("AI News ping role (defaults to a role named AI News)", "role")
+    catalog["GAMING_NEWS_CHANNEL_ID"] = ("Live gaming news channel (/news feed:gaming)", "text")
+    catalog["GAMING_NEWS_PING_ROLE_ID"] = ("Gaming News ping role for breaking stories (defaults to a role named Gaming News)", "role")
     return catalog
 
 
