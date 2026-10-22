@@ -155,8 +155,8 @@ async def _run_all():
     cog = aif.AIFeatures(bot)
     calls = []
 
-    async def fake_chat(prompt, system, max_tokens=400):
-        calls.append(("chat", prompt))
+    async def fake_chat(history, system, feature="ask", max_tokens=400):
+        calls.append(("chat", history[-1]["content"].split(": ", 1)[1]))
         return ai.Reply("Try the Ranger build!", 42)
 
     verdicts = {}
@@ -169,7 +169,7 @@ async def _run_all():
         calls.append(("image", prompt))
         return b"\x89PNG fake"
 
-    ai.chat, ai.classify, ai.image = fake_chat, fake_classify, fake_image
+    ai.converse, ai.classify, ai.image = fake_chat, fake_classify, fake_image
     try:
         g = Guild()
         bc, art, general = g.add("bot-commands"), g.add("ai-art"), g.add("general-chat")

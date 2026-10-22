@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
 from utils import ai
@@ -35,6 +35,8 @@ IMAGINE_DAILY_LIMIT = config._int("IMAGINE_DAILY_LIMIT", 5)
 IMAGINE_GUILD_DAILY_CAP = config._int("IMAGINE_GUILD_DAILY_CAP", 50)  # per server; /imagine-cap overrides
 AUTOMOD_USER_COOLDOWN = 10  # seconds between AI checks of the same user's messages (cost guard)
 ASK_REPLY_LIMIT = 1800
+ASK_MEMORY_TURNS = max(0, config._int("ASK_MEMORY_TURNS", 6))    # exchanges remembered per channel/thread
+ASK_MEMORY_HOURS = max(1, config._int("ASK_MEMORY_HOURS", 24))   # older messages are forgotten
 
 AI_OFF = "🤖 AI features are switched off on this bot right now. Ask an admin to add an xAI key."
 
@@ -43,7 +45,8 @@ ASK_SYSTEM = (
     "about games, tech, creative projects and general topics clearly and briefly (under 1,500 characters; "
     "short paragraphs or a few bullets). Keep everything safe-for-work and kind. If a request is sexual, "
     "NSFW, hateful, or asks for harmful or illegal help, politely refuse in one sentence and suggest "
-    "something else. Never use @everyone or @here."
+    "something else. Never use @everyone or @here. Earlier messages in this conversation may come from different "
+    "members; each user message starts with their name."
 )
 
 # --------------------------------------------------------------- filtering
@@ -265,6 +268,18 @@ def flag_view(flag_id: int) -> discord.ui.View:
     return view
 
 
+class ContinueView(discord.ui.View):
+    """"Continue in thread" under an /ask answer (not persistent: works for 30 minutes)."""
+
+    def __init__(self, cog: "AIFeatures", question: str):
+        super().__init__(timeout=1800)
+        self.cog, self.question = cog, question
+
+    @discord.ui.button(label="Continue in thread", style=discord.ButtonStyle.secondary, emoji="🧵")
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.continue_in_thread(interaction, self.question)
+
+
 # ------------------------------------------------------------------------ cog
 class AIFeatures(commands.Cog):
     """/ask, /imagine, AI auto-moderation and usage tracking."""
@@ -277,29 +292,73 @@ class AIFeatures(commands.Cog):
 
     async def cog_load(self):
         self.bot.add_dynamic_items(_FlagButton)
+        self.prune_loop.start()
 
     async def cog_unload(self):
         self.bot.remove_dynamic_items(_FlagButton)
+        self.prune_loop.cancel()
+
+    @tasks.loop(hours=1)
+    async def prune_loop(self):
+        try:
+            removed = await self.bot.db.prune_memory(int(time.time()) - ASK_MEMORY_HOURS * 3600)
+            if removed:
+                logger.info("Forgot %d expired /ask memory message(s)", removed)
+        except Exception:
+            logger.exception("Could not prune /ask memory")
 
     # ---------------------------------------------------------------- /ask
-    async def ask_block(self, ctx: commands.Context) -> Optional[str]:
-        """Why this /ask can't run now, or None."""
+    async def ask_block(self, ctx_or_guild, channel=None, author=None) -> Optional[str]:
+        """Why this /ask (or @mention chat) can't run now, or None. Pass a Context, or (guild, channel, author)."""
+        if channel is None:
+            guild, channel, author = ctx_or_guild.guild, ctx_or_guild.channel, ctx_or_guild.author
+        else:
+            guild = ctx_or_guild
         if not ai.key_set():
             return AI_OFF
-        allowed = ask_channel(ctx.guild)
+        allowed = ask_channel(guild)
         if allowed is None:
             return "🤖 `/ask` has no channel yet. An admin can set one with `/setup-link key:ASK_CHANNEL_ID`."
-        if not _in(ctx.channel, [allowed]) and not is_staff(ctx.author):
+        if not _in(channel, [allowed]) and not is_staff(author):
             return f"🤖 `/ask` works in {allowed.mention}."
-        wait = self.ask_cd.remaining(ctx.guild.id, ctx.author.id)
+        wait = self.ask_cd.remaining(guild.id, author.id)
         if wait:
             return f"⏳ Slow down! Try `/ask` again in {wait:.0f}s."
-        used = await self.bot.db.count_ai(ctx.guild.id, "ask", day_start(), ctx.author.id)
+        used = await self.bot.db.count_ai(guild.id, "ask", day_start(), author.id)
         if used >= ASK_DAILY_LIMIT:
             return f"📅 You've used all {ASK_DAILY_LIMIT} `/ask` questions for today. They reset at midnight."
         return None
 
-    @commands.hybrid_command(name="ask", description="Ask the bot anything (gaming, tech, creative)")
+    async def memory(self, guild_id: int, scope_id: int) -> list[dict]:
+        if not ASK_MEMORY_TURNS:
+            return []
+        rows = await self.bot.db.get_memory(guild_id, scope_id, int(time.time()) - ASK_MEMORY_HOURS * 3600,
+                                            ASK_MEMORY_TURNS * 2)
+        while rows and rows[0]["role"] != "user":
+            rows = rows[1:]  # always start with a question
+        return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+    async def chat_reply(self, guild, channel, author, question: str) -> Optional[ai.Reply]:
+        """Answer with the channel/thread's recent conversation as context, and remember the exchange."""
+        question = trim(question, 1000)
+        history = await self.memory(guild.id, channel.id)
+        user_turn = f"{author.display_name}: {question}"
+        reply = await ai.converse(history + [{"role": "user", "content": user_turn}],
+                                  ASK_SYSTEM.format(server=guild.name), feature="ask")
+        await self.bot.db.log_ai(guild.id, author.id, "ask", reply.tokens if reply else 0, ok=bool(reply))
+        if reply is not None and ASK_MEMORY_TURNS:
+            await self.bot.db.add_memory(guild.id, channel.id, author.id, "user", user_turn)
+            await self.bot.db.add_memory(guild.id, channel.id, getattr(getattr(self.bot, "user", None), "id", 0),
+                                         "assistant", trim(reply.text, ASK_REPLY_LIMIT))
+        return reply
+
+    def ask_embed(self, author, question: str, text: str) -> discord.Embed:
+        embed = discord.Embed(description=trim(text, ASK_REPLY_LIMIT), color=discord.Color.blurple())
+        embed.set_author(name=trim(f"{author.display_name} asked: {question}", 256), icon_url=author.display_avatar.url)
+        embed.set_footer(text="✨ AI-generated • can be wrong • /ask reset to start over")
+        return embed
+
+    @commands.hybrid_group(name="ask", description="Ask the bot anything (gaming, tech, creative)", fallback="chat")
     @app_commands.describe(question="Your question")
     async def ask(self, ctx: commands.Context, *, question: str):
         if problem := await self.ask_block(ctx):
@@ -308,17 +367,91 @@ class AIFeatures(commands.Cog):
         self.ask_cd.hit(ctx.guild.id, ctx.author.id)
         await ctx.defer()
         question = trim(question, 1000)
-        reply = await ai.chat(question, ASK_SYSTEM.format(server=ctx.guild.name))
-        await self.bot.db.log_ai(ctx.guild.id, ctx.author.id, "ask", reply.tokens if reply else 0, ok=bool(reply))
+        reply = await self.chat_reply(ctx.guild, ctx.channel, ctx.author, question)
         if reply is None:
             self.ask_cd.reset(ctx.guild.id, ctx.author.id)  # our fault, not theirs
             await ctx.send("😵 I couldn't reach the AI just now. Try again in a minute.", ephemeral=True)
             return
-        embed = discord.Embed(description=trim(reply.text, ASK_REPLY_LIMIT), color=discord.Color.blurple())
-        embed.set_author(name=trim(f"{ctx.author.display_name} asked: {question}", 256),
-                         icon_url=ctx.author.display_avatar.url)
-        embed.set_footer(text="✨ AI-generated • can be wrong")
-        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        view = ContinueView(self, question) if isinstance(ctx.channel, discord.TextChannel) else None
+        kwargs = {"view": view} if view else {}
+        await ctx.send(embed=self.ask_embed(ctx.author, question, reply.text),
+                       allowed_mentions=discord.AllowedMentions.none(), **kwargs)
+
+    @ask.command(name="reset", description="Make the bot forget this channel's /ask conversation")
+    async def ask_reset(self, ctx: commands.Context):
+        if isinstance(ctx.channel, discord.TextChannel) and not is_staff(ctx.author) and ask_channel(ctx.guild) != ctx.channel:
+            await ctx.send("🤖 Nothing to reset here.", ephemeral=True)
+            return
+        removed = await self.bot.db.clear_memory(ctx.guild.id, ctx.channel.id)
+        logger.info("%s reset /ask memory in %s (%d messages)", ctx.author, ctx.channel, removed)
+        await ctx.send("🧹 Done: I've forgotten our conversation here. Fresh start!", ephemeral=True)
+
+    async def continue_in_thread(self, interaction: discord.Interaction, question: str) -> None:
+        message = interaction.message
+        if message is None or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("I can only start a thread from a channel.", ephemeral=True)
+            return
+        try:
+            thread = await message.create_thread(name=trim(question, 90) or "AI chat", auto_archive_duration=1440)
+        except discord.HTTPException as e:
+            logger.warning("Could not create /ask thread in %s: %s", interaction.channel, e)
+            await interaction.response.send_message("⚠️ I couldn't create a thread here (I need **Create Public "
+                                                    "Threads**), or one already exists.", ephemeral=True)
+            return
+        # Carry the conversation over so the thread starts with context.
+        for turn in (await self.memory(interaction.guild_id, interaction.channel.id))[-ASK_MEMORY_TURNS * 2:]:
+            await self.bot.db.add_memory(interaction.guild_id, thread.id, interaction.user.id, turn["role"], turn["content"])
+        await interaction.response.send_message(f"🧵 Continue in {thread.mention}!", ephemeral=True)
+        try:
+            await thread.send(f"Keep going here, {interaction.user.mention}: mention me or use `/ask` and I'll remember "
+                              "this conversation. `/ask reset` clears it.",
+                              allowed_mentions=discord.AllowedMentions(users=[interaction.user]))
+        except discord.HTTPException:
+            pass
+
+    # --------------------------------------------------------- @mention chat
+    def mention_question(self, message: discord.Message) -> Optional[str]:
+        """The question in a message that @mentions the bot, or None (not for us / it's a prefix command)."""
+        me = getattr(self.bot, "user", None)
+        if message.guild is None or message.author.bot or message.webhook_id or me is None:
+            return None
+        if not any(u.id == me.id for u in message.mentions):
+            return None
+        text = re.sub(r"\s+", " ", re.sub(rf"<@!?{me.id}>", "", message.content)).strip()
+        first = text.split(maxsplit=1)[0].lower() if text else ""
+        if first and self.bot.get_command(first.lstrip(config.COMMAND_PREFIX)) is not None and \
+                re.match(rf"^\s*<@!?{me.id}>", message.content):
+            return None  # "@bot help" is a prefix command, handled by discord.py
+        return text or None
+
+    @commands.Cog.listener("on_message")
+    async def mention_chat(self, message: discord.Message):
+        question = self.mention_question(message)
+        if question is None:
+            return
+        guild, channel, author = message.guild, message.channel, message.author
+        if not ai.key_set():
+            return
+        problem = await self.ask_block(guild, channel, author)
+        if problem is not None:
+            if problem.startswith(("⏳", "📅")):  # tell them; channel problems stay silent (no spam)
+                try:
+                    await message.reply(problem, delete_after=15, mention_author=False)
+                except discord.HTTPException:
+                    pass
+            return
+        self.ask_cd.hit(guild.id, author.id)
+        async with channel.typing():
+            reply = await self.chat_reply(guild, channel, author, question)
+        if reply is None:
+            self.ask_cd.reset(guild.id, author.id)
+            text = "😵 I couldn't reach the AI just now. Try again in a minute."
+        else:
+            text = trim(reply.text, 1990)
+        try:
+            await message.reply(text, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as e:
+            logger.warning("Could not reply to a mention in %s: %s", channel, e)
 
     # ------------------------------------------------------------- /imagine
     async def imagine_block(self, ctx: commands.Context) -> Optional[str]:
