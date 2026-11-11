@@ -356,6 +356,18 @@ With a key, new members get a short personalized greeting line (on the fast mode
 - If the AI flags a message, the bot deletes it, DMs the author a short warning, and posts the message, user, reason and AI verdict to the mod log. The log post has **↩️ Undo** (re-posts the message and marks it a false positive) and **🔇 Timeout 10m** buttons, which only Staff can use and which keep working after restarts.
 - The bot needs **Manage Messages** to delete messages and **Moderate Members** for the timeout button.
 
+### Anti-spam (admin, no AI)
+Rule-based and free (no xAI calls). **On by default.** Deletes spam and escalates per member (strikes expire after 10 minutes):
+1st hit = message deleted + a short warning that deletes itself · 2nd = 10 min timeout · 3rd+ = 1 hour timeout (their messages from the last 2 minutes are bulk-deleted). Every action is logged to the mod-log channel.
+
+Catches: floods (5 messages in 5s), copy-paste (same message 3x in 30s, any channel), 5+ user/role mentions, any @everyone/@here, invites to other servers, scam/phishing links (free Nitro/Steam gift/airdrop + link, fake Discord/Steam domains), link-only posts from members who joined in the last 24h, caps walls (75% of 20+ letters), emoji walls (15+) and zalgo text.
+Exempt: bots, admins, Manage Server / Manage Messages, the staff role, plus any channel/role you exempt. Needs **Manage Messages** and **Moderate Members**, and the bot's role above member roles.
+```
+/antispam status     /antispam on     /antispam off     /antispam reset
+/antispam set setting_name:mentions value:6          (flood_messages, flood_seconds, duplicates, caps_percent, emojis, ...)
+/antispam exempt-channel channel:#memes             toggle      /antispam exempt-role role:@Trusted   toggle
+```
+
 ### /ai-usage (admin)
 Shows today's and this month's AI calls per feature (`ask`, `imagine`, `imagine-check`, `automod`, `news`), with tokens, images, failures and how many users. It also lists the current limits. Every AI call is logged in the `ai_usage` table. "Today" and limits reset at midnight in `TIMEZONE`.
 

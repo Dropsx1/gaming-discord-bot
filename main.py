@@ -25,6 +25,7 @@ COGS = [
     "cogs.events",
     "cogs.roles",
     "cogs.moderation",
+    "cogs.antispam",
     "cogs.fun",
     "cogs.voice",
     "cogs.tickets",
