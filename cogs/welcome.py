@@ -16,7 +16,7 @@ from utils import guildconfig as gc
 
 logger = logging.getLogger("bot.welcome")
 
-WELCOME_AI = config._bool("WELCOME_AI", True)  # AI-personalized greeting when XAI_API_KEY is set
+WELCOME_AI = config._bool("WELCOME_AI", True)  # AI-personalized greeting when GEMINI_API_KEY is set
 WELCOME_AI_PER_HOUR = 20   # per server; a join raid falls back to the template (cost guard)
 WELCOME_AI_TIMEOUT = 8     # seconds; never hold up the welcome for long
 

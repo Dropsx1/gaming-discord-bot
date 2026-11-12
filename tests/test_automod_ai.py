@@ -1,6 +1,6 @@
 """Smarter automod: previous-message context, image checks (vision), warn-only mode, /automod stats from Undo.
 
-No token or xAI key needed (AI is faked).
+No token or Gemini key needed (AI is faked).
 Run:  python tests/test_automod_ai.py      (or: python -m pytest tests/)
 """
 
@@ -43,7 +43,7 @@ async def _run():
         return ai.Reply("nsfw" if "bad" in url else "ok", 50)
 
     try:
-        with patched(ai, classify=classify, classify_image=classify_image, XAI_API_KEY="k"):
+        with patched(ai, classify=classify, classify_image=classify_image, GEMINI_API_KEY="k"):
             g = Guild()
             general, modlog = g.add("general"), g.add("mod-log", public=False)
             await gc.set_many(g, {"AUTOMOD_ENABLED": 1, "MOD_LOG_CHANNEL_ID": modlog.id})

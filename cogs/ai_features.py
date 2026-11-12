@@ -1,6 +1,6 @@
-"""AI features on xAI (Grok): /ask, /imagine, AI auto-moderation and /ai-usage.
+"""AI features on Google Gemini: /ask, /imagine, AI auto-moderation and /ai-usage.
 
-Everything needs only XAI_API_KEY; without it each feature replies with a
+Everything needs only GEMINI_API_KEY; without it each feature replies with a
 friendly "AI is off" message and the automod listener does nothing.
 
 Cost controls: a cheap text model with a 400-token cap, per-user cooldowns and
@@ -43,7 +43,7 @@ ASK_REPLY_LIMIT = 1800
 ASK_MEMORY_TURNS = max(0, config._int("ASK_MEMORY_TURNS", 6))    # exchanges remembered per channel/thread
 ASK_MEMORY_HOURS = max(1, config._int("ASK_MEMORY_HOURS", 24))   # older messages are forgotten
 
-AI_OFF = "🤖 AI features are switched off on this bot right now. Ask an admin to add an xAI key."
+AI_OFF = "🤖 AI features are switched off on this bot right now. Ask an admin to add a Gemini API key."
 
 ASK_SYSTEM = (
     "You are the friendly helper bot of a gaming Discord server called {server}. Answer members' questions "
@@ -787,7 +787,7 @@ class AIFeatures(commands.Cog):
         level = SENSITIVITY_NAMES[setting(ctx.guild, "AUTOMOD_SENSITIVITY", 2)]
         mode = MODES.get(setting(ctx.guild, "AUTOMOD_MODE", 0), "delete")
         images = "on" if setting(ctx.guild, "AUTOMOD_IMAGES", 0) else "off"
-        note = "" if ai.key_set() else "\n⚠️ No xAI key is set, so it can't run until one is added."
+        note = "" if ai.key_set() else "\n⚠️ No Gemini API key is set, so it can't run until one is added."
         await ctx.send(f"🛡️ AI auto-moderation is **{'on' if on else 'off'}**, sensitivity **{level}**, "
                        f"mode **{mode}**, image checks **{images}**.{note}", ephemeral=True)
 
@@ -798,7 +798,7 @@ class AIFeatures(commands.Cog):
         logger.info("%s turned automod on in %s", ctx.author, ctx.guild)
         msg = "🛡️ AI auto-moderation is **on**."
         if not ai.key_set():
-            msg += "\n⚠️ No xAI key is set, so it won't do anything until one is added."
+            msg += "\n⚠️ No Gemini API key is set, so it won't do anything until one is added."
         if gc.channel(ctx.guild, "MOD_LOG_CHANNEL_ID") is None:
             msg += "\n⚠️ No mod-log channel is set, so flags won't be logged. Run `/setup` or `/setup-link`."
         if not ctx.guild.me.guild_permissions.manage_messages:
@@ -837,7 +837,7 @@ class AIFeatures(commands.Cog):
         logger.info("%s turned automod image checks %s in %s", ctx.author, enabled, ctx.guild)
         msg = f"🖼️ AI image checks are **{enabled}**."
         if enabled == "on":
-            msg += (f" PNG/JPEG uploads are checked with `{ai.XAI_VISION_MODEL}` (max 2 per message, one check per "
+            msg += (f" PNG/JPEG uploads are checked with `{ai.vision_model()}` (max 2 per message, one check per "
                     f"member every {AUTOMOD_IMAGE_COOLDOWN}s). Automod itself must be on too.")
         await ctx.send(msg, ephemeral=True)
 
@@ -887,7 +887,7 @@ class AIFeatures(commands.Cog):
     async def ai_usage(self, ctx: commands.Context):
         embed = discord.Embed(title="🤖 AI usage", color=discord.Color.blurple())
         if not ai.key_set():
-            embed.description = "⚠️ AI is off (no xAI key)."
+            embed.description = "⚠️ AI is off (no Gemini API key)."
         for title, since in (("Today", day_start()), ("This month", month_start())):
             rows = await self.bot.db.ai_usage_summary(ctx.guild.id, since)
             lines = [
@@ -910,8 +910,8 @@ class AIFeatures(commands.Cog):
         )
         caps = ", ".join(f"{f} ${ai.spend.spent(f):.2f}/{c:g}" for f, c in sorted(ai.CAPS.items()) if ai.spend.spent(f))
         embed.add_field(name="Spend today (USD, whole bot, est.)", value=trim(caps or "Nothing yet.", 1024), inline=False)
-        embed.set_footer(text=f"Models: {ai.XAI_SMART_MODEL} (chat), {ai.XAI_FAST_MODEL} (fast), "
-                              f"{ai.XAI_IMAGE_MODEL} (images) • days reset at "
+        embed.set_footer(text=f"Models: {ai.smart_model()} (chat), {ai.fast_model()} (fast), "
+                              f"{ai.image_model()} (images) • days reset at "
                               f"midnight {config.TIMEZONE}")
         await ctx.send(embed=embed, ephemeral=True)
 

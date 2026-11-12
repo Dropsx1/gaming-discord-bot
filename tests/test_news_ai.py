@@ -1,6 +1,6 @@
 """News upgrades: 429 backoff (no alerts), cross-outlet duplicate merging, AI recaps (weekly digest + daily).
 
-No network, token or xAI key needed.
+No network, token or Gemini key needed.
 Run:  python tests/test_news_ai.py      (or: python -m pytest tests/)
 """
 
@@ -108,7 +108,7 @@ async def _duplicates(cog, g, db, clock):
         return [newsfeed.Article(**vars(a)) for a in feeds_now], []
 
     cog.fetch_all = fake_fetch_all
-    with patched(ai, news_review=review, XAI_API_KEY="k"):
+    with patched(ai, news_review=review, GEMINI_API_KEY="k"):
         result = await cog.poll()
         assert result.merged == 1 and sorted(reviewed) == ["Anthropic launches Claude 6",
                                                             "OpenAI launches GPT-6 with real-time voice"]
@@ -131,7 +131,7 @@ async def _recaps(cog, g, db, clock):
         seen.append((period, [s["title"] for s in stories]))
         return ai.Reply("What a week!\n• GPT-6 shipped.", 30)
 
-    with patched(ai, news_recap=recap, XAI_API_KEY="k"):
+    with patched(ai, news_recap=recap, GEMINI_API_KEY="k"):
         embed = await news_cog.build_recap(db, int(clock.t) - 7 * 86400, "week", g.id)
         assert seen[-1][0] == "week" and seen[-1][1][0].startswith("OpenAI launches GPT-6")
         assert not any("TechCrunch" in t for t in seen[-1][1])  # duplicates aren't recapped twice
@@ -159,7 +159,7 @@ async def _recaps(cog, g, db, clock):
             e2 = await schedule_cog.Schedule.weekly_recap(sched, g)
         assert e1 is not None and e1 is e2 and len(seen) == calls + 1
 
-    with patched(ai, XAI_API_KEY=""):
+    with patched(ai, GEMINI_API_KEY="", XAI_API_KEY=""):
         assert await news_cog.build_recap(db, 0, "week", g.id) is None
 
 

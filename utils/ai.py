@@ -1,19 +1,24 @@
-"""xAI (Grok) text generation.
+"""AI provider client: Google Gemini (default) with a legacy xAI (Grok) fallback.
 
 Set in Railway (or .env):
-    XAI_API_KEY   your key from https://console.x.ai
-    XAI_MODEL     a model name your key can use (the bot logs the available
-                  ones at startup if this is missing or wrong)
+    GEMINI_API_KEY   your key from https://aistudio.google.com/apikey
 
-Optional, for /ask, /imagine, AI auto-moderation and AI news summaries:
-    XAI_FAST_MODEL    cheap text model (default: XAI_MODEL, else grok-4-1-fast-non-reasoning)
-    XAI_IMAGE_MODEL   image model (default grok-imagine-image)
-    XAI_SMART_MODEL   strongest chat model, for /ask, @mention chat, /summarize and
-                      the news recaps (default grok-4.7, xAI's flagship chat model)
-    XAI_VISION_MODEL  image-understanding model for automod image checks
-                      (default: XAI_SMART_MODEL; grok-4.7 accepts text + image input)
-    AI_DAILY_COST_CAPS  per-feature daily spend caps in USD, e.g. "ask=2,summarize=1,imagine=1"
-These only need XAI_API_KEY.
+Optional (all have defaults that are confirmed on the production key):
+    GEMINI_FAST_MODEL    cheap text model for automod, news, trivia, welcome lines, /idea and the
+                         /imagine safety check + prompt enhancement (default gemini-3.5-flash-lite)
+    GEMINI_SMART_MODEL   chat model for /ask, @mention chat, /summarize, ticket summaries and the
+                         news recaps (default gemini-3.8-flash)
+    GEMINI_VISION_MODEL  image-understanding model for automod image checks (default: GEMINI_SMART_MODEL)
+    GEMINI_IMAGE_MODEL   /imagine model (default gemini-3-pro-image, "Nano Banana Pro")
+    GEMINI_MODEL         /idea and /prompt model (default: GEMINI_FAST_MODEL)
+    GEMINI_API_BASE      OpenAI-compatible endpoint (default
+                         https://generativelanguage.googleapis.com/v1beta/openai/)
+    GEMINI_MAX_TOKENS    max tokens for /idea and /prompt (default 300)
+    AI_DAILY_COST_CAPS   per-feature daily spend caps in USD, e.g. "ask=2,summarize=1,imagine=1"
+
+Rollback: when GEMINI_API_KEY is NOT set, the old xAI settings are used instead (XAI_API_KEY,
+XAI_MODEL, XAI_FAST_MODEL, XAI_SMART_MODEL, XAI_VISION_MODEL, XAI_IMAGE_MODEL, XAI_SMART_REASONING,
+XAI_API_BASE). When GEMINI_API_KEY is set, xAI is never called.
 
 Per-feature model selection: FEATURE_MODELS maps a feature ("ask", "summarize",
 "automod", ...) to the smart, fast, vision or image model. Every call made
@@ -37,6 +42,17 @@ import aiohttp
 
 log = logging.getLogger("bot.ai")
 
+# ---- Gemini (preferred). Reached through Google's OpenAI-compatible endpoint.
+GEMINI_API_BASE = (os.getenv("GEMINI_API_BASE", "").strip()
+                   or "https://generativelanguage.googleapis.com/v1beta/openai/").rstrip("/")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "").strip() or "gemini-3.5-flash-lite"
+GEMINI_SMART_MODEL = os.getenv("GEMINI_SMART_MODEL", "").strip() or "gemini-3.8-flash"
+GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "").strip() or GEMINI_SMART_MODEL
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "").strip() or "gemini-3-pro-image"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip() or GEMINI_FAST_MODEL  # /idea and /prompt
+
+# ---- Legacy xAI (Grok): only used when GEMINI_API_KEY is unset, so rollback is just swapping keys.
 API_BASE = os.getenv("XAI_API_BASE", "https://api.x.ai/v1").rstrip("/")
 XAI_API_KEY = os.getenv("XAI_API_KEY", "").strip()
 XAI_MODEL = os.getenv("XAI_MODEL", "").strip()
@@ -46,11 +62,12 @@ XAI_IMAGE_MODEL = os.getenv("XAI_IMAGE_MODEL", "").strip() or "grok-imagine-imag
 XAI_SMART_MODEL = os.getenv("XAI_SMART_MODEL", "").strip() or "grok-4.7"
 XAI_VISION_MODEL = os.getenv("XAI_VISION_MODEL", "").strip() or XAI_SMART_MODEL
 # grok-4.7 reasons before answering (default effort "high"); "low" keeps chat fast and cheap. Empty = model default.
+# xAI only: never sent to Gemini.
 XAI_SMART_REASONING = os.getenv("XAI_SMART_REASONING", "low").strip().lower()
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 SMART_TIMEOUT = aiohttp.ClientTimeout(total=60)
 IMAGE_TIMEOUT = aiohttp.ClientTimeout(total=60)
-MAX_TOKENS = int(os.getenv("XAI_MAX_TOKENS", "300") or 300)
+MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "").strip() or os.getenv("XAI_MAX_TOKENS", "").strip() or 300)
 CHAT_MAX_TOKENS = 400  # /ask replies
 
 VERDICTS = ("ok", "toxic", "nsfw", "spam")
@@ -102,18 +119,57 @@ class Reply:
     tokens: int  # prompt + completion tokens, as billed
 
 
+def using_gemini() -> bool:
+    """Gemini is the provider whenever GEMINI_API_KEY is set (xAI is then never called)."""
+    return bool(GEMINI_API_KEY)
+
+
+def provider() -> str:
+    """Human-readable provider name for logs and admin messages."""
+    return "Gemini" if using_gemini() or not XAI_API_KEY else "xAI"
+
+
+def _api_key() -> str:
+    return GEMINI_API_KEY if using_gemini() else XAI_API_KEY
+
+
+def _api_base() -> str:
+    return GEMINI_API_BASE if using_gemini() else API_BASE
+
+
+def text_model() -> str:
+    """/idea and /prompt model (Gemini always has a default; legacy xAI needs XAI_MODEL)."""
+    return GEMINI_MODEL if using_gemini() else XAI_MODEL
+
+
+def fast_model() -> str:
+    return GEMINI_FAST_MODEL if using_gemini() else XAI_FAST_MODEL
+
+
+def smart_model() -> str:
+    return GEMINI_SMART_MODEL if using_gemini() else XAI_SMART_MODEL
+
+
+def vision_model() -> str:
+    return GEMINI_VISION_MODEL if using_gemini() else XAI_VISION_MODEL
+
+
+def image_model() -> str:
+    return GEMINI_IMAGE_MODEL if using_gemini() else XAI_IMAGE_MODEL
+
+
 def enabled() -> bool:
-    """/idea and /prompt: need a key and XAI_MODEL."""
-    return bool(XAI_API_KEY and XAI_MODEL)
+    """/idea and /prompt: need a key and a model (Gemini has a default model, so the key is enough)."""
+    return bool(_api_key() and text_model())
 
 
 def key_set() -> bool:
     """/ask, /imagine and AI moderation: only need the key."""
-    return bool(XAI_API_KEY)
+    return bool(_api_key())
 
 
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"}
+    return {"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json"}
 
 
 async def _get_session() -> aiohttp.ClientSession:
@@ -150,15 +206,22 @@ DEFAULT_CAPS = {
     "automod": 0.5, "automod-image": 1.0, "imagine-check": 0.25, "imagine-enhance": 0.25, "news": 0.5,
     "trivia": 0.5, "welcome": 0.25, "idea": 0.25, "imagine": 2.0,
 }
-# USD per 1M tokens (input, output) and per image, from https://docs.x.ai/docs/models (Oct 2026).
-# Unknown models are priced like grok-4.7 (the most expensive listed text model) so caps stay safe.
+# USD per 1M tokens (input, output) and per image. Gemini: Google AI pricing (Nov 2026; gemini-3.8-flash is
+# promo pricing through Dec 31, 2026). xAI: https://docs.x.ai/docs/models (Oct 2026), kept for rollback.
+# Gemini bills thinking tokens as output tokens; they are included in usage.completion_tokens.
+# Unknown models are priced high (above every default) so caps stay safe.
 PRICES = {
+    "gemini-3.5-flash-lite": (0.30, 2.50), "gemini-3.8-flash": (0.75, 3.75),
     "grok-4.7": (2.00, 6.00), "grok-4.6": (2.00, 6.00), "grok-4.5": (2.00, 6.00), "grok-4.3": (1.25, 2.50),
     "grok-4.20-0309-reasoning": (1.25, 2.50), "grok-4.20-0309-non-reasoning": (1.25, 2.50),
     "grok-4-1-fast-non-reasoning": (0.20, 0.50), "grok-4-1-fast-reasoning": (0.20, 0.50),
 }
-DEFAULT_PRICE = (2.00, 6.00)
-IMAGE_PRICES = {"grok-imagine-image": 0.02, "grok-imagine-image-2.0": 0.04, "grok-imagine-image-quality": 0.05}
+DEFAULT_PRICE = (4.00, 15.00)
+IMAGE_PRICES = {
+    "gemini-3-pro-image": 0.134, "gemini-3.1-flash-lite-image": 0.0336, "gemini-nano-banana-2.1": 0.0336,
+    "grok-imagine-image": 0.02, "grok-imagine-image-2.0": 0.04, "grok-imagine-image-quality": 0.05,
+}
+DEFAULT_IMAGE_PRICE = 0.134
 
 
 def _parse_caps(raw: str) -> dict[str, float]:
@@ -178,7 +241,7 @@ CAPS = _parse_caps(os.getenv("AI_DAILY_COST_CAPS", ""))
 
 def model_for(feature: Optional[str]) -> str:
     kind = FEATURE_MODELS.get(feature or "", FAST)
-    return {SMART: XAI_SMART_MODEL, FAST: XAI_FAST_MODEL, VISION: XAI_VISION_MODEL, IMAGE: XAI_IMAGE_MODEL}[kind]
+    return {SMART: smart_model, FAST: fast_model, VISION: vision_model, IMAGE: image_model}[kind]()
 
 
 def token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -187,7 +250,7 @@ def token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
 
 
 def image_cost(model: str, images: int = 1) -> float:
-    return IMAGE_PRICES.get(model, 0.05) * images
+    return IMAGE_PRICES.get(model, DEFAULT_IMAGE_PRICE) * images
 
 
 class Spend:
@@ -264,7 +327,7 @@ async def set_store(db) -> None:
 async def _post_chat(payload: dict, timeout) -> tuple[int, object]:
     async with _limit:
         session = await _get_session()
-        async with session.post(f"{API_BASE}/chat/completions", json=payload, headers=_headers(),
+        async with session.post(f"{_api_base()}/chat/completions", json=payload, headers=_headers(),
                                 timeout=timeout) as resp:
             if resp.status != 200:
                 return resp.status, (await resp.text())[:300]
@@ -287,25 +350,26 @@ async def complete(
     if not key_set() or over_cap(feature):
         return None
     model = model or model_for(feature)
-    smart = model == XAI_SMART_MODEL
+    smart = model == smart_model()
     payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
-    if smart and XAI_SMART_REASONING:
+    # reasoning_effort is xAI-only. Gemini bills thinking inside output tokens, so no padding there either.
+    if smart and XAI_SMART_REASONING and not using_gemini():
         payload["reasoning_effort"] = XAI_SMART_REASONING
         payload["max_tokens"] = max_tokens + 1500  # reasoning tokens count towards max_tokens
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-    timeout = SMART_TIMEOUT if smart or model == XAI_VISION_MODEL else TIMEOUT
+    timeout = SMART_TIMEOUT if smart or model == vision_model() else TIMEOUT
     try:
         status, data = await _post_chat(payload, timeout)
         if status == 400 and ("reasoning_effort" in payload or "response_format" in payload):
             # Older/other models may reject these optional fields: retry once without them.
-            log.info("xAI rejected optional fields for %s (%s); retrying without them", model, str(data)[:120])
+            log.info("%s rejected optional fields for %s (%s); retrying without them", provider(), model, str(data)[:120])
             payload.pop("reasoning_effort", None)
             payload.pop("response_format", None)
             payload["max_tokens"] = max_tokens
             status, data = await _post_chat(payload, timeout)
         if status != 200:
-            log.warning("xAI request failed: HTTP %s %s", status, data)
+            log.warning("%s request failed: HTTP %s %s", provider(), status, data)
             return None
         text = data["choices"][0]["message"]["content"]
         usage = data.get("usage") or {}
@@ -314,15 +378,15 @@ async def complete(
                                             int(usage.get("completion_tokens") or 0)
                                             or max(0, tokens - int(usage.get("prompt_tokens") or 0))))
         if not isinstance(text, str) or not text.strip():
-            log.warning("xAI returned an empty reply")
+            log.warning("%s returned an empty reply", provider())
             return None
         return Reply(text.strip() if json_mode else _clean(text), tokens)
     except asyncio.TimeoutError:
-        log.warning("xAI request timed out after %ss", timeout.total)
+        log.warning("%s request timed out after %ss", provider(), timeout.total)
     except (aiohttp.ClientError, KeyError, IndexError, TypeError, ValueError) as e:
-        log.warning("xAI request failed: %s: %s", type(e).__name__, e)
+        log.warning("%s request failed: %s: %s", provider(), type(e).__name__, e)
     except Exception:
-        log.exception("Unexpected error calling xAI")
+        log.exception("Unexpected error calling %s", provider())
     return None
 
 
@@ -353,7 +417,7 @@ async def generate(prompt: str, system: Optional[str] = None) -> Optional[str]:
     """Return the model's reply to `prompt`, or None on any failure."""
     if not enabled():
         return None
-    reply = await _chat(XAI_MODEL, prompt, system or DEFAULT_SYSTEM, MAX_TOKENS, 0.9, feature="idea")
+    reply = await _chat(text_model(), prompt, system or DEFAULT_SYSTEM, MAX_TOKENS, 0.9, feature="idea")
     return reply.text if reply else None
 
 
@@ -361,7 +425,7 @@ async def chat(prompt: str, system: str, max_tokens: int = CHAT_MAX_TOKENS) -> O
     """One-shot smart-model reply (no memory)."""
     if not key_set():
         return None
-    return await _chat(XAI_SMART_MODEL, prompt, system, max_tokens, 0.7, feature="ask")
+    return await _chat(smart_model(), prompt, system, max_tokens, 0.7, feature="ask")
 
 
 async def converse(history: list[dict], system: str, feature: str = "ask",
@@ -391,7 +455,7 @@ async def classify(text: str, context: Optional[list[str]] = None, feature: str 
         lines = "\n".join(c[:300] for c in context[-5:])
         prompt = (f"Earlier messages in the channel (context only, do not classify these):\n{lines}\n\n"
                   f"Message to classify:\n{text[:1500]}")
-    reply = await _chat(XAI_FAST_MODEL, prompt, MODERATION_SYSTEM, 5, 0.0, feature=feature)
+    reply = await _chat(fast_model(), prompt, MODERATION_SYSTEM, 5, 0.0, feature=feature)
     if reply is None:
         return None
     verdict = _verdict(reply.text)
@@ -410,11 +474,38 @@ IMAGE_MODERATION_SYSTEM = (
 )
 
 
+MAX_INLINE_IMAGE = 8 * 1024 * 1024
+
+
+async def _inline_image(url: str) -> Optional[str]:
+    """Download an image (e.g. Discord CDN) and return it as a data: URL, or None on any failure."""
+    try:
+        session = await _get_session()
+        async with session.get(url, timeout=TIMEOUT) as resp:
+            if resp.status != 200:
+                return None
+            mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if mime not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+                low = url.lower().split("?")[0]
+                mime = "image/png" if low.endswith(".png") else "image/jpeg"
+            data = await resp.content.read(MAX_INLINE_IMAGE + 1)
+        if not data or len(data) > MAX_INLINE_IMAGE:
+            return None
+        return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+    except Exception as e:
+        log.info("Could not inline image for moderation: %s", type(e).__name__)
+        return None
+
+
 async def classify_image(url: str, caption: str = "") -> Optional[Reply]:
     """Vision verdict for one image URL (jpg/png). Reply.text is one of VERDICTS."""
     if not key_set():
         return None
-    parts = [{"type": "image_url", "image_url": {"url": url}},
+    image_url = url
+    if using_gemini():
+        # Gemini's OpenAI-compatible endpoint reliably accepts inline base64 images; remote URLs may be refused.
+        image_url = await _inline_image(url) or url
+    parts = [{"type": "image_url", "image_url": {"url": image_url}},
              {"type": "text", "text": f"Caption posted with it (context): {caption[:300]}" if caption else "Classify."}]
     reply = await complete([{"role": "system", "content": IMAGE_MODERATION_SYSTEM}, {"role": "user", "content": parts}],
                            feature="automod-image", max_tokens=5, temperature=0.0)
@@ -429,7 +520,7 @@ async def news_review(title: str, source: str, description: str) -> Optional[Rep
     if not key_set():
         return None
     prompt = f"Title: {title[:300]}\nSource: {source[:60]}\nDescription: {description[:1200] or '(none)'}"
-    return await _chat(XAI_FAST_MODEL, prompt, NEWS_SYSTEM, 160, 0.2, feature="news")
+    return await _chat(fast_model(), prompt, NEWS_SYSTEM, 160, 0.2, feature="news")
 
 
 async def gaming_news_review(title: str, source: str, description: str) -> Optional[Reply]:
@@ -437,7 +528,7 @@ async def gaming_news_review(title: str, source: str, description: str) -> Optio
     if not key_set():
         return None
     prompt = f"Title: {title[:300]}\nSource: {source[:60]}\nDescription: {description[:1200] or '(none)'}"
-    return await _chat(XAI_FAST_MODEL, prompt, GAMING_NEWS_SYSTEM, 160, 0.2, feature="news")  # shares the news budget
+    return await _chat(fast_model(), prompt, GAMING_NEWS_SYSTEM, 160, 0.2, feature="news")  # shares the news budget
 
 
 # ------------------------------------------------------------- summaries
@@ -532,7 +623,7 @@ async def welcome_line(server: str, name: str, member_count: Optional[int] = Non
     facts = f"Server: {server[:100]}\nMember display name: {name[:40]}"
     if member_count:
         facts += f"\nThey are member number {member_count}."
-    reply = await _chat(XAI_FAST_MODEL, facts, WELCOME_SYSTEM, 80, 0.9, feature="welcome")
+    reply = await _chat(fast_model(), facts, WELCOME_SYSTEM, 80, 0.9, feature="welcome")
     if reply is None:
         return None
     text = re.sub(r"<@[!&]?\d+>|https?://\S+", "", reply.text).strip()
@@ -574,83 +665,114 @@ async def enhance_prompt(prompt: str, style_hint: str = "") -> Optional[Reply]:
     if not key_set():
         return None
     style = f"Apply this style: {style_hint}. " if style_hint else ""
-    reply = await _chat(XAI_FAST_MODEL, prompt[:500], ENHANCE_SYSTEM.format(style=style), 200, 0.8,
+    reply = await _chat(fast_model(), prompt[:500], ENHANCE_SYSTEM.format(style=style), 200, 0.8,
                         feature="imagine-enhance")
     if reply is None:
         return None
     return Reply(reply.text[:900], reply.tokens)
 
 
-# Values grok-imagine-image accepts for aspect_ratio (docs.x.ai image generation guide). "auto" = model picks.
+# Aspect ratios offered by /imagine. "auto" = model picks. xAI takes these as aspect_ratio; Gemini's
+# OpenAI-compatible endpoint may ignore aspect_ratio, so they are mapped to a pixel `size` instead.
 ASPECT_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "auto")
+GEMINI_SIZES = {
+    "1:1": "1024x1024", "16:9": "1792x1024", "9:16": "1024x1792", "4:3": "1024x768", "3:4": "768x1024",
+    "3:2": "1536x1024", "2:3": "1024x1536", "2:1": "2048x1024", "1:2": "1024x2048",
+}
+
+
+async def _post_image(payload: dict) -> tuple[int, object, object]:
+    """POST one image request. Returns (status, json-or-error-text, session)."""
+    async with _limit:
+        session = await _get_session()
+        async with session.post(
+            f"{_api_base()}/images/generations", json=payload, headers=_headers(), timeout=IMAGE_TIMEOUT
+        ) as resp:
+            if resp.status != 200:
+                return resp.status, (await resp.text())[:300], session
+            return 200, await resp.json(), session
 
 
 async def image(prompt: str, aspect_ratio: Optional[str] = None) -> Optional[bytes]:
     """Generate one image; returns PNG/JPEG bytes, or None on any failure (or over the daily cap)."""
     if not key_set() or over_cap("imagine"):
         return None
-    payload = {"model": XAI_IMAGE_MODEL, "prompt": prompt, "n": 1, "response_format": "b64_json"}
+    model = image_model()
+    name = provider()
+    payload = {"model": model, "prompt": prompt, "n": 1, "response_format": "b64_json"}
     if aspect_ratio and aspect_ratio in ASPECT_RATIOS and aspect_ratio != "auto":
-        payload["aspect_ratio"] = aspect_ratio
+        if using_gemini():
+            payload["size"] = GEMINI_SIZES[aspect_ratio]
+        else:
+            payload["aspect_ratio"] = aspect_ratio
     try:
-        async with _limit:
-            session = await _get_session()
-            async with session.post(
-                f"{API_BASE}/images/generations", json=payload, headers=_headers(), timeout=IMAGE_TIMEOUT
-            ) as resp:
-                if resp.status != 200:
-                    body = (await resp.text())[:300]
-                    log.warning("xAI image request failed: HTTP %s %s", resp.status, body)
-                    return None
-                data = await resp.json()
-            await spend.add("imagine", image_cost(XAI_IMAGE_MODEL))
-            item = data["data"][0]
-            if item.get("b64_json"):
-                return base64.b64decode(item["b64_json"])
-            if item.get("url"):  # some models only return a (temporary) URL
-                async with session.get(item["url"], timeout=IMAGE_TIMEOUT) as img:
-                    if img.status == 200:
-                        return await img.read()
-            log.warning("xAI image response had no image data")
+        status, data, session = await _post_image(payload)
+        if status != 200 and "size" in payload and status in (400, 422):
+            # The model may not support that size: retry once letting it pick.
+            log.info("%s rejected size %s for %s (%s); retrying without it", name, payload["size"], model, str(data)[:120])
+            payload.pop("size")
+            status, data, session = await _post_image(payload)
+        if status != 200:
+            log.warning("%s image request failed: HTTP %s %s", name, status, data)
+            return None
+        await spend.add("imagine", image_cost(model))
+        item = data["data"][0]
+        if item.get("b64_json"):
+            return base64.b64decode(item["b64_json"])
+        if item.get("url"):  # some models only return a (temporary) URL
+            async with session.get(item["url"], timeout=IMAGE_TIMEOUT) as img:
+                if img.status == 200:
+                    return await img.read()
+        log.warning("%s image response had no image data", name)
     except asyncio.TimeoutError:
-        log.warning("xAI image request timed out after %ss", IMAGE_TIMEOUT.total)
+        log.warning("%s image request timed out after %ss", name, IMAGE_TIMEOUT.total)
     except (aiohttp.ClientError, KeyError, IndexError, TypeError, ValueError) as e:
-        log.warning("xAI image request failed: %s: %s", type(e).__name__, e)
+        log.warning("%s image request failed: %s: %s", name, type(e).__name__, e)
     except Exception:
-        log.exception("Unexpected error calling xAI images")
+        log.exception("Unexpected error calling %s images", name)
     return None
 
 
 async def check_setup() -> None:
-    """Log whether AI is configured, and which models the key can use."""
-    if not XAI_API_KEY:
-        log.info("AI disabled (XAI_API_KEY not set): /idea and /prompt use built-in lists; /ask, /imagine and AI automod are off")
+    """Log whether AI is configured, and which models the key can use. Never logs the key."""
+    if not key_set():
+        log.info("AI disabled (GEMINI_API_KEY not set): /idea and /prompt use built-in lists; "
+                 "/ask, /imagine and AI automod are off")
         return
+    gemini = using_gemini()
+    name = provider()
+    key_var = "GEMINI_API_KEY" if gemini else "XAI_API_KEY"
+    prefix = "GEMINI_" if gemini else "XAI_"
+    if not gemini:
+        log.warning("GEMINI_API_KEY is not set: using the legacy xAI provider (XAI_API_KEY)")
     try:
         session = await _get_session()
-        async with session.get(f"{API_BASE}/models", headers=_headers()) as resp:
+        async with session.get(f"{_api_base()}/models", headers=_headers()) as resp:
             if resp.status == 401:
-                log.error("XAI_API_KEY was rejected by xAI (HTTP 401). Check the key.")
+                log.error("%s was rejected by %s (HTTP 401). Check the key.", key_var, name)
                 return
             if resp.status != 200:
-                log.warning("Could not list xAI models: HTTP %s", resp.status)
+                log.warning("Could not list %s models: HTTP %s", name, resp.status)
                 return
             data = await resp.json()
-        models = sorted(m.get("id", "") for m in data.get("data", []) if m.get("id"))
+        # Gemini's OpenAI-compatible list returns ids like "models/gemini-3.8-flash".
+        models = sorted(m.get("id", "").removeprefix("models/") for m in data.get("data", []) if m.get("id"))
     except Exception as e:
-        log.warning("Could not reach xAI to check setup: %s", e)
+        log.warning("Could not reach %s to check setup: %s", name, e)
         return
 
-    if models and XAI_FAST_MODEL not in models:
-        log.warning("XAI_FAST_MODEL=%r (for /ask and auto-moderation) is not in your key's model list. Listed: %s",
-                    XAI_FAST_MODEL, ", ".join(models))
-    for label, name in (("XAI_SMART_MODEL", XAI_SMART_MODEL), ("XAI_VISION_MODEL", XAI_VISION_MODEL)):
-        if models and name not in models:
-            log.warning("%s=%r is not in your key's model list (fine if it is an alias). Listed: %s",
-                        label, name, ", ".join(models))
-    if not XAI_MODEL:
-        log.warning("/idea and /prompt use built-in lists: set XAI_MODEL to one of: %s", ", ".join(models) or "(none listed)")
-    elif models and XAI_MODEL not in models:
-        log.warning("XAI_MODEL=%r is not in the model list for your key (fine if it is an alias). Listed: %s", XAI_MODEL, ", ".join(models))
+    listed = ", ".join(models)
+    for label, model in (("FAST_MODEL", fast_model()), ("SMART_MODEL", smart_model()),
+                         ("VISION_MODEL", vision_model()), ("IMAGE_MODEL", image_model())):
+        if models and model not in models:
+            log.warning("%s%s=%r is not in your key's model list (fine if it is an alias). Listed: %s",
+                        prefix, label, model, listed)
+    model = text_model()
+    if not model:
+        log.warning("/idea and /prompt use built-in lists: set %sMODEL to one of: %s", prefix, listed or "(none listed)")
+    elif models and model not in models:
+        log.warning("%sMODEL=%r is not in the model list for your key (fine if it is an alias). Listed: %s",
+                    prefix, model, listed)
     else:
-        log.info("AI enabled with model %s", XAI_MODEL)
+        log.info("AI enabled with model %s (%s; chat %s, fast %s, images %s)", model, name, smart_model(),
+                 fast_model(), image_model())

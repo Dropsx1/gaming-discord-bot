@@ -47,7 +47,7 @@ async def _summarize(db, bot):
     assert len(lines) == 200 and all("SomeBot" not in l for l in lines)
     assert lines[-1] == "Alice: msg 249" and lines[0].endswith("msg ") is False
 
-    with patched(ai, summarize=fake_summarize, XAI_API_KEY="k"):
+    with patched(ai, summarize=fake_summarize, GEMINI_API_KEY="k"):
         ctx = Ctx(g, ch, alice)
         await cog.summarize.callback(cog, ctx, messages=30)
         embed = ctx.kw[-1]["embed"]
@@ -69,7 +69,7 @@ async def _summarize(db, bot):
         await cog.summarize.callback(cog, ectx, messages=10)
         assert "nothing to summarize" in ectx.replies[-1] and cog.summarize_cd.remaining(g.id, bob.id) == 0
 
-    with patched(ai, XAI_API_KEY=""):
+    with patched(ai, GEMINI_API_KEY="", XAI_API_KEY=""):
         octx = Ctx(g, ch, bob)
         await cog.summarize.callback(cog, octx, messages=10)
         assert octx.replies[-1] == ext.AI_OFF
@@ -86,7 +86,7 @@ async def _summarize(db, bot):
         deleted.append(reason)
     ticket.delete = delete
     tcog = tickets_cog.Tickets(types.SimpleNamespace(add_view=lambda v: None, db=db))
-    with patched(tickets_cog, CLOSE_DELAY=0), patched(ai, summarize=fake_summarize, XAI_API_KEY="k"):
+    with patched(tickets_cog, CLOSE_DELAY=0), patched(ai, summarize=fake_summarize, GEMINI_API_KEY="k"):
         await tcog.close(ticket, staff, transcript=False, summarize=True)
         assert deleted and got[-1][1] == "ticket-summary"
         assert got[-1][0] == ["Alice: my game crashes", "user%d: try verifying files" % staff.id]
@@ -115,7 +115,7 @@ async def _trivia(db, bot):
     g = Guild()
     ch = g.add("games")
     alice, bob, carol = Member(g, name="Alice"), Member(g, name="Bob"), Member(g, name="Carol")
-    with patched(ai, trivia_question=fake_trivia, XAI_API_KEY="k"):
+    with patched(ai, trivia_question=fake_trivia, GEMINI_API_KEY="k"):
         ctx = Ctx(g, ch, alice)
         await cog.trivia.callback(cog, ctx, topic="Zelda", difficulty="hard")
         view = ctx.kw[-1]["view"]
@@ -152,7 +152,7 @@ async def _trivia(db, bot):
     async def broken(*a):
         return None
 
-    with patched(ai, trivia_question=broken, XAI_API_KEY="k"):
+    with patched(ai, trivia_question=broken, GEMINI_API_KEY="k"):
         fctx = Ctx(g, g.add("third"), carol)
         await cog.trivia.callback(cog, fctx)
         assert fctx.replies[-1].startswith("😵")

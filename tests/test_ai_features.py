@@ -1,4 +1,4 @@
-"""AI features: limits, channel rules, filters, usage log, automod. No token or xAI key needed (AI is faked).
+"""AI features: limits, channel rules, filters, usage log, automod. No token or Gemini key needed (AI is faked).
 
 Run:  python tests/test_ai_features.py      (or: python -m pytest tests/)
 """
@@ -172,7 +172,7 @@ async def _run_all():
     async def no_enhance(prompt, style_hint=""):
         return None  # enhancement failing falls back to the member's own prompt
 
-    real = (ai.converse, ai.classify, ai.image, ai.enhance_prompt, ai.XAI_API_KEY)
+    real = (ai.converse, ai.classify, ai.image, ai.enhance_prompt, ai.GEMINI_API_KEY, ai.XAI_API_KEY)
     ai.converse, ai.classify, ai.image, ai.enhance_prompt = fake_chat, fake_classify, fake_image, no_enhance
     try:
         g = Guild()
@@ -181,13 +181,13 @@ async def _run_all():
         user, staff = Member(g), Member(g, staff=True)
 
         # --- AI off: friendly message, no calls
-        ai.XAI_API_KEY = ""
+        ai.GEMINI_API_KEY = ai.XAI_API_KEY = ""
         ctx = Ctx(g, bc, user)
         await cog.ask.callback(cog, ctx, question="hi")
         await cog.imagine.callback(cog, ctx, prompt="a cat")
         assert ctx.replies == [aif.AI_OFF, aif.AI_OFF] and not calls
 
-        ai.XAI_API_KEY = "test-key"
+        ai.GEMINI_API_KEY = "test-key"
         # --- /ask: #bot-commands by default (found by name), linkable elsewhere
         ctx = Ctx(g, general, user)
         await cog.ask.callback(cog, ctx, question="best build?")
@@ -265,7 +265,7 @@ async def _run_all():
         assert rows["ask"]["calls"] == aif.ASK_DAILY_LIMIT and rows["imagine"]["images"] == 1
         assert rows["automod"]["tokens"] == 14 and "imagine-check" in rows
     finally:
-        ai.converse, ai.classify, ai.image, ai.enhance_prompt, ai.XAI_API_KEY = real  # don't leak into other tests
+        ai.converse, ai.classify, ai.image, ai.enhance_prompt, ai.GEMINI_API_KEY, ai.XAI_API_KEY = real  # don't leak into other tests
         await db.close()
 
 

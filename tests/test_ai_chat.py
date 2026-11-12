@@ -1,6 +1,6 @@
 """Chat that remembers: /ask memory per channel/thread, expiry, /ask reset, continue in thread, @mention chat.
 
-No token or xAI key needed (AI is faked).
+No token or Gemini key needed (AI is faked).
 Run:  python tests/test_ai_chat.py      (or: python -m pytest tests/)
 """
 
@@ -46,7 +46,7 @@ async def _run():
 
 
 async def _body(db, cog, me, seen, fake_converse):
-    with patched(ai, converse=fake_converse, XAI_API_KEY="k"):
+    with patched(ai, converse=fake_converse, GEMINI_API_KEY="k"):
         g = Guild()
         bc = g.add("bot-commands")
         await gc.set_many(g, {"ASK_CHANNEL_ID": bc.id})

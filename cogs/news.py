@@ -10,7 +10,7 @@ Details below describe the AI feed; the gaming feed uses the same limits.
 - Feeds: `ai_news` + `ai` in data/rss_feeds.json, polled every NEWS_POLL_MINUTES (20).
 - Each article (deduped by URL in SQLite) is posted once per server in NEWS_CHANNEL_ID
   (/setup-link NEWS_CHANNEL_ID) with its title, source, a 1-2 sentence summary, link and image.
-- With XAI_API_KEY the AI writes the summary and scores importance 1-10. 9+ = BREAKING:
+- With GEMINI_API_KEY the AI writes the summary and scores importance 1-10. 9+ = BREAKING:
   red embed, pings the "AI News" role, posts right away (even in quiet hours).
 - Normal posts: best first, at most 1 per 30 minutes and 12 per day, none 1-7 AM (TIMEZONE).
 - Never posts anything older than 24 hours, so the first run doesn't flood the channel.
@@ -517,7 +517,7 @@ class News(commands.Cog):
         lines = [
             f"**Status:** {'on' if news_on(ctx.guild, spec) else 'off'}",
             f"**Channel:** {channel.mention if channel else f'not set (`/setup-link {spec.channel_key}`)'}",
-            f"**AI summaries + breaking news:** {'on' if ai.key_set() else 'off (no XAI_API_KEY; feed summaries are used)'}",
+            f"**AI summaries + breaking news:** {'on' if ai.key_set() else 'off (no GEMINI_API_KEY; feed summaries are used)'}",
             f"**Posted today:** {posted}/{config.NEWS_DAILY_LIMIT} · **Waiting:** {queued}",
             f"**Limits:** 1 post per {config.NEWS_MIN_GAP_MINUTES} min, quiet {config.NEWS_QUIET_START}:00–"
             f"{config.NEWS_QUIET_END}:00 ({config.TIMEZONE}); breaking news skips both",
@@ -546,7 +546,7 @@ class News(commands.Cog):
             if not (perms.send_messages and perms.embed_links):
                 msg += f"\n⚠️ I need **Send Messages** and **Embed Links** in {channel.mention}."
         if not ai.key_set():
-            msg += "\nℹ️ No xAI key: summaries come from the feeds, and there are no BREAKING alerts."
+            msg += "\nℹ️ No Gemini API key: summaries come from the feeds, and there are no BREAKING alerts."
         await ctx.send(msg, ephemeral=True)
 
     @news.command(name="off", description="Turn a news feed off (admin)")
@@ -573,7 +573,7 @@ class News(commands.Cog):
         if enabled == "on":
             msg += f" It posts around {config.NEWS_DAILY_RECAP_HOUR}:30 ({config.TIMEZONE}) in the news channel."
             if not ai.key_set():
-                msg += "\nℹ️ No xAI key, so there's nothing to post until one is added."
+                msg += "\nℹ️ No Gemini API key, so there's nothing to post until one is added."
         await ctx.send(msg, ephemeral=True)
 
     @news.command(name="test", description="Post the latest item from a news feed now (admin)")

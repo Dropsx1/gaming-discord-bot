@@ -115,7 +115,7 @@ class Fun(commands.Cog):
         if from_ai:
             embed.set_footer(text="✨ AI-generated")
         elif not ai.enabled():
-            embed.set_footer(text="Tip: staff can enable Grok/xAI for fresh AI ideas")
+            embed.set_footer(text="Tip: staff can enable Gemini AI for fresh AI ideas")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="idea", description="Get a random game challenge")

@@ -1,6 +1,6 @@
 """Gaming news feed: its own channel key/role, feed list, AI prompt, and separate dedupe from the AI feed.
 
-No network, Discord token or xAI key needed.
+No network, Discord token or Gemini key needed.
 Run:  python tests/test_gaming_news.py      (or: python -m pytest tests/)
 """
 
