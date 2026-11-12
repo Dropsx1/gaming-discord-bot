@@ -49,6 +49,7 @@ async def _welcome(db):
         assert "PRESS START" in post.embed.description and "SQUAD UP" in post.embed.description
         assert post.embed.image.url == "attachment://welcome_banner.jpg" and post.kw["file"].filename == "welcome_banner.jpg"
         assert "AI POWER-UPS" not in post.embed.description  # no AI channels configured -> section omitted
+        assert "CREATOR LINKS" not in post.embed.description  # no #affiliates channel -> section omitted
         assert post.kw["allowed_mentions"].everyone is False
         assert await db.count_ai(g.id, "welcome", 0) == 1
 
@@ -74,6 +75,24 @@ async def _welcome(db):
     with patched(ai, GEMINI_API_KEY="", XAI_API_KEY=""):
         await cog.on_member_join(Member(g))
         assert "glad you made it" in welcome.sent[-1].embed.description
+
+
+
+async def _affiliates_welcome(db):
+    """When #affiliates exists, the welcome embed points new members to it."""
+    cog = welcome_cog.Welcome(types.SimpleNamespace(db=db))
+    g = Guild("Pixel Haven")
+    welcome = g.add("welcome")
+    affiliates = g.add("affiliates")
+    await gc.set_many(g, {"WELCOME_CHANNEL_ID": welcome.id})
+    m = Member(g, name="Zelda Fan")
+    with patched(ai, GEMINI_API_KEY="", XAI_API_KEY=""):
+        await cog.on_member_join(m)
+        desc = welcome.sent[-1].embed.description
+        assert "CREATOR LINKS" in desc
+        assert affiliates.mention in desc
+        assert "https://linktain.com" in desc
+        assert "PRESS START" in desc and "SQUAD UP" in desc
 
 
 async def _member_role():
@@ -135,6 +154,7 @@ async def _run():
     await gc.init(db)
     try:
         await _welcome(db)
+        await _affiliates_welcome(db)
         await _member_role()
         await _ticket_category(db)
     finally:
