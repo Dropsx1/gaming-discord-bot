@@ -107,6 +107,13 @@ class Welcome(commands.Cog):
         if ai_lines:
             parts.append("**🤖 AI POWER-UPS**\n" + "\n".join(ai_lines))
         parts.append(f"**🤝 SQUAD UP**\nUse `/lfg` in {lfg} or hop into voice.")
+        affiliates = discord.utils.get(member.guild.text_channels, name="affiliates")
+        if affiliates is not None:
+            parts.append(
+                f"**💼 CREATOR LINKS**\n"
+                f"Earn from the links you share with [Linktain](https://linktain.com). "
+                f"Details and their official Discord are in {affiliates.mention}."
+            )
         parts.append("Keep it chill, keep it SFW. GG! ✨")
         embed = discord.Embed(
             title=f"🕹️ Welcome to the Arcade, {member.display_name}!"[:256],
