@@ -5,6 +5,7 @@ Run:  python tests/test_imagine_ai.py      (or: python -m pytest tests/)
 """
 
 import asyncio
+import copy
 import os
 import sys
 import tempfile
@@ -25,14 +26,17 @@ from utils.db import Database  # noqa: E402
 
 
 async def _payloads():
-    """Gemini: only OpenAI-compatible image parameters are sent; aspect ratio is mapped to `size`;
-    a size the model rejects is retried once without it. Legacy xAI still gets aspect_ratio."""
+    """Gemini /imagine uses native generateContent (not /images/generations), with aspectRatio
+    in imageConfig; a rejected ratio is retried once without it. Legacy xAI still uses
+    /images/generations with aspect_ratio."""
     sent = []
     statuses = []
+    PNG_B64 = "iVBORw=="
 
     class Resp:
-        def __init__(self, status):
+        def __init__(self, status, gemini):
             self.status = status
+            self.gemini = gemini
 
         async def __aenter__(self):
             return self
@@ -41,43 +45,52 @@ async def _payloads():
             return False
 
         async def json(self):
-            return {"data": [{"b64_json": "iVBORw=="}]}
+            if self.gemini:
+                return {"candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "image/png",
+                                                                              "data": PNG_B64}}]}}]}
+            return {"data": [{"b64_json": PNG_B64}]}
 
         async def text(self):
-            return "bad size"
+            return "bad aspect ratio"
 
     class Session:
         closed = False
 
         def post(self, url, json=None, headers=None, **kw):
-            sent.append((url, dict(json), headers))
-            return Resp(statuses.pop(0) if statuses else 200)
+            sent.append((url, copy.deepcopy(json), dict(headers or {})))
+            return Resp(statuses.pop(0) if statuses else 200, ":generateContent" in url)
 
     async def get_session():
         return Session()
 
+    native = ai._gemini_native_base()
     with patched(ai, _get_session=get_session, GEMINI_API_KEY="k", XAI_API_KEY="x"):
         assert await ai.image("a cat", "16:9")
         assert await ai.image("a cat", "auto")
         assert await ai.image("a cat", "7:3")  # not a supported ratio: omitted
         assert await ai.image("a cat", "9:16")
-        statuses.append(400)  # size rejected -> retry without size
+        assert await ai.image("a cat", "2:1")  # offered in /imagine, not in Gemini's set: omitted
+        statuses.append(400)  # aspect ratio rejected -> retry without imageConfig
         assert await ai.image("a cat", "4:3") == b"\x89PNG"
-    assert sent[0][0].startswith(ai.GEMINI_API_BASE) and sent[0][0].endswith("/images/generations")
-    assert sent[0][2]["Authorization"] == "Bearer k"
-    assert sent[0][1] == {"model": ai.GEMINI_IMAGE_MODEL, "prompt": "a cat", "n": 1, "response_format": "b64_json",
-                          "size": "1792x1024"}
-    assert "size" not in sent[1][1] and "size" not in sent[2][1]
-    assert sent[3][1]["size"] == "1024x1792"
-    assert sent[4][1]["size"] == "1024x768" and "size" not in sent[5][1]
-    for _, payload, _ in sent:
-        assert set(payload) <= {"model", "prompt", "n", "response_format", "size"}
-    assert set(ai.GEMINI_SIZES) == set(ai.ASPECT_RATIOS) - {"auto"}
+    assert all(u.startswith(native + "/models/") and u.endswith(":generateContent") for u, _, _ in sent)
+    assert all("/openai/" not in u and "/images/generations" not in u for u, _, _ in sent)
+    assert sent[0][2]["x-goog-api-key"] == "k" and "Authorization" not in sent[0][2]
+    def cfg(i):
+        return sent[i][1]["generationConfig"]
+    assert sent[0][1]["contents"] == [{"role": "user", "parts": [{"text": "a cat"}]}]
+    assert cfg(0) == {"responseModalities": ["TEXT", "IMAGE"], "imageConfig": {"aspectRatio": "16:9"}}
+    assert cfg(1) == {"responseModalities": ["TEXT", "IMAGE"]} and "imageConfig" not in cfg(1)
+    assert "imageConfig" not in cfg(2)
+    assert cfg(3)["imageConfig"]["aspectRatio"] == "9:16"
+    assert "imageConfig" not in cfg(4)  # 2:1 omitted
+    assert cfg(5)["imageConfig"]["aspectRatio"] == "4:3" and "imageConfig" not in cfg(6)
+    assert sent[0][0].endswith(f"/models/{ai.GEMINI_IMAGE_MODEL}:generateContent")
 
     sent.clear()
     with patched(ai, _get_session=get_session, GEMINI_API_KEY="", XAI_API_KEY="x"):  # rollback path
         assert await ai.image("a cat", "16:9")
-    assert sent[0][0].startswith(ai.API_BASE)
+    assert sent[0][0].startswith(ai.API_BASE) and sent[0][0].endswith("/images/generations")
+    assert sent[0][2]["Authorization"] == "Bearer x"
     assert sent[0][1] == {"model": ai.XAI_IMAGE_MODEL, "prompt": "a cat", "n": 1, "response_format": "b64_json",
                           "aspect_ratio": "16:9"}
 
