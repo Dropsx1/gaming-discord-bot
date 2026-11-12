@@ -1,6 +1,6 @@
 """AI welcome greeting (with template fallback), /setup member-role fix, ticket category auto-create.
 
-No token or xAI key needed (AI and Discord are faked).
+No token or Gemini key needed (AI and Discord are faked).
 Run:  python tests/test_welcome_tickets.py      (or: python -m pytest tests/)
 """
 
@@ -41,7 +41,7 @@ async def _welcome(db):
         prompts.append((server, name, count))
         return ai.Reply("Welcome, Zelda Fan, grab your Master Sword! 🗡️", 20)
 
-    with patched(ai, welcome_line=fake_line, XAI_API_KEY="k"):
+    with patched(ai, welcome_line=fake_line, GEMINI_API_KEY="k"):
         await cog.on_member_join(m)
         post = welcome.sent[-1]
         assert prompts == [("Pixel Haven", "Zelda Fan", 42)]
@@ -68,10 +68,10 @@ async def _welcome(db):
 
     for fake in (broken, slow, naughty):
         cog.recent.clear()
-        with patched(ai, welcome_line=fake, XAI_API_KEY="k"), patched(welcome_cog, WELCOME_AI_TIMEOUT=0.05):
+        with patched(ai, welcome_line=fake, GEMINI_API_KEY="k"), patched(welcome_cog, WELCOME_AI_TIMEOUT=0.05):
             await cog.on_member_join(Member(g))
             assert "glad you made it" in welcome.sent[-1].embed.description, fake
-    with patched(ai, XAI_API_KEY=""):
+    with patched(ai, GEMINI_API_KEY="", XAI_API_KEY=""):
         await cog.on_member_join(Member(g))
         assert "glad you made it" in welcome.sent[-1].embed.description
 

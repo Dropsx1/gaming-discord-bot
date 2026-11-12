@@ -84,7 +84,7 @@ class CloseConfirmView(discord.ui.View):
         self.cog = cog
         self.user = user
         if not (is_staff(user) and ai.key_set()):
-            self.remove_item(self.with_summary)  # AI summary on close: staff only, needs the xAI key
+            self.remove_item(self.with_summary)  # AI summary on close: staff only, needs the Gemini API key
 
     async def _go(self, interaction: discord.Interaction, transcript: bool, summarize: bool = False):
         await interaction.response.edit_message(content="🔒 Closing…", view=None)

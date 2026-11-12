@@ -1,6 +1,6 @@
 """Live AI news feed: dedupe, 24h cutoff, limits, quiet hours, breaking news, bad feeds, /news.
 
-No network, Discord token or xAI key needed (feeds and AI are faked).
+No network, Discord token or Gemini key needed (feeds and AI are faked).
 Run:  python tests/test_news.py      (or: python -m pytest tests/)
 """
 
@@ -178,7 +178,7 @@ async def _run():
         assert not news_cog.quiet_hours()
         assert await cog.dispatch(g) == "normal"
 
-        # 6. With an xAI key: AI summary + score; 9+ is BREAKING (red, pings AI News, ignores quiet hours/gap).
+        # 6. With a Gemini key: AI summary + score; 9+ is BREAKING (red, pings AI News, ignores quiet hours/gap).
         calls = []
 
         async def fake_review(title, source, description):

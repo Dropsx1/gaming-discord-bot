@@ -21,8 +21,8 @@ Every command works as a **slash command** (`/lfg`) and also with the **`!` pref
 | **Moderation**: warnings saved to the database, timeouts, kicks, role-hierarchy checks and staff logging | `/warn`, `/warnings`, `/timeout`, `/untimeout`, `/kick` |
 | **Auto voice**: Join-to-Create temporary channels with owner controls | `/vc ...` |
 | **Tickets**: private support channels with claim, close (with optional transcript), add/remove user | `/ticketpanel`, `/ticket`, `/close`, `/claim`, `/adduser`, `/removeuser` |
-| **Fun**: game suggestions, conversation starters, challenges and prompts (optional Grok/xAI) | `/suggest`, `/idea`, `/prompt` |
-| **AI (Grok/xAI, optional)**: chat that remembers (also by @mention), chat summaries, trivia with XP, image generation with styles, AI welcome lines, AI auto-moderation (text + images) with Undo / Timeout buttons, usage stats and daily cost caps | `/ask`, `/ask reset`, `/summarize`, `/trivia`, `/trivia-leaderboard`, `/imagine`, `/automod` (admin), `/ai-usage` (admin), `/imagine-cap` (admin) |
+| **Fun**: game suggestions, conversation starters, challenges and prompts (optional Gemini AI) | `/suggest`, `/idea`, `/prompt` |
+| **AI (Google Gemini, optional)**: chat that remembers (also by @mention), chat summaries, trivia with XP, image generation with styles, AI welcome lines, AI auto-moderation (text + images) with Undo / Timeout buttons, usage stats and daily cost caps | `/ask`, `/ask reset`, `/summarize`, `/trivia`, `/trivia-leaderboard`, `/imagine`, `/automod` (admin), `/ai-usage` (admin), `/imagine-cap` (admin) |
 | **Live AI news**: new articles from OpenAI, Anthropic, Google DeepMind, The Verge, TechCrunch, VentureBeat, Ars Technica and MIT Tech Review, each posted once, with optional AI summaries and 🚨 BREAKING alerts | `/news status · on · off · test` (admin) |
 | **Server setup**: creates/reuses all channels and roles and saves their IDs; link existing channels/roles by hand; show the saved config | `/setup`, `/setup-link`, `/setup-role`, `/setup-show` (admin) |
 | **Utility** | `/help`, `/ping`, `/schedule-test` (admin), `!sync` (bot owner) |
@@ -61,7 +61,7 @@ gaming-discord-bot/
 │   ├── giveaways.py       # /giveaway
 │   ├── moderation.py      # /warn /warnings /timeout /untimeout /kick
 │   ├── fun.py             # /suggest /idea /prompt
-│   ├── ai_features.py     # /ask (+ @mention chat), /imagine, AI automod, /ai-usage (Grok/xAI)
+│   ├── ai_features.py     # /ask (+ @mention chat), /imagine, AI automod, /ai-usage (Gemini)
 │   ├── ai_extras.py       # /summarize, /trivia, /trivia-leaderboard
 │   ├── news.py            # Live AI news feed + /news
 │   ├── voice.py           # Join-to-Create + /vc
@@ -72,7 +72,7 @@ gaming-discord-bot/
 │   ├── content.py         # Picks unused prompts/themes from data/
 │   ├── news.py            # RSS article parsing for the AI news feed
 │   ├── timeparse.py       # Reads event times like "sat 8pm"
-│   ├── ai.py              # Optional Grok/xAI client (text, images, moderation)
+│   ├── ai.py              # Optional Gemini client (text, images, moderation)
 │   └── helpers.py         # Staff checks, logging, durations
 ├── data/
 │   ├── prompts.json       # 120 Prompt of the Day items
@@ -275,23 +275,25 @@ Members click **🎫 Open Ticket** or use `/ticket`. Inside a ticket:
 - **Remix entries:** each person's first post in the thread with an image, video or link counts. Votes are 🔥 reactions; self-votes and bot reactions don't count. Ties go to the earliest entry.
 - **Prompt King:** the reply in the prompt thread with the most reactions wins.
 
-## Optional: Grok / xAI
+## Optional: Google Gemini
 
-Everything AI is optional. Set `XAI_API_KEY` (from <https://console.x.ai>) in Railway. Without it, every AI command replies with a friendly "AI is off" message and auto-moderation does nothing. Scheduled posts never use AI; they always come from `data/`.
+Everything AI is optional. Set `GEMINI_API_KEY` (from <https://aistudio.google.com/apikey>) in Railway. Without it, every AI command replies with a friendly "AI is off" message and auto-moderation does nothing. Scheduled posts never use AI; they always come from `data/`.
 
 | Feature | Needs | Model |
 |---|---|---|
-| `/idea`, `/prompt` | `XAI_API_KEY` + `XAI_MODEL` (otherwise built-in lists) | `XAI_MODEL` |
-| `/ask`, @mention chat, `/summarize`, ticket summaries, news recaps | `XAI_API_KEY` | `XAI_SMART_MODEL` (default `grok-4.7`, xAI's flagship chat model) |
-| AI auto-moderation (text), `/imagine` safety check + prompt enhancement, news scoring, `/trivia`, welcome lines | `XAI_API_KEY` | `XAI_FAST_MODEL` (a cheap non-reasoning model; defaults to `XAI_MODEL`) |
-| AI auto-moderation (images) | `XAI_API_KEY` + `/automod images on` | `XAI_VISION_MODEL` (default: `XAI_SMART_MODEL`; grok-4.7 takes image input) |
-| `/imagine` | `XAI_API_KEY` | `XAI_IMAGE_MODEL` (default `grok-imagine-image`) |
+| `/idea`, `/prompt` | `GEMINI_API_KEY` (otherwise built-in lists) | `GEMINI_MODEL` (default: `GEMINI_FAST_MODEL`) |
+| `/ask`, @mention chat, `/summarize`, ticket summaries, news recaps | `GEMINI_API_KEY` | `GEMINI_SMART_MODEL` (default `gemini-3.8-flash`) |
+| AI auto-moderation (text), `/imagine` safety check + prompt enhancement, news scoring, `/trivia`, welcome lines | `GEMINI_API_KEY` | `GEMINI_FAST_MODEL` (default `gemini-3.5-flash-lite`) |
+| AI auto-moderation (images) | `GEMINI_API_KEY` + `/automod images on` | `GEMINI_VISION_MODEL` (default: `GEMINI_SMART_MODEL`; Gemini models take image input) |
+| `/imagine` | `GEMINI_API_KEY` | `GEMINI_IMAGE_MODEL` (default `gemini-3-pro-image`, Nano Banana Pro) |
 
 At startup the bot logs the model names your key can use, and warns if a configured model isn't one of them.
 
-**Daily cost caps.** Every AI call is priced (xAI's list prices in `utils/ai.py`) and counted per feature per day (saved in SQLite, so restarts don't reset it). When a feature reaches its cap it behaves as if the AI were unavailable (the usual friendly message) until midnight in `TIMEZONE`. Defaults (USD/day, whole bot): ask 2, imagine 2, summarize 1, automod-image 1, mention 1, automod 0.5, news 0.5, trivia 0.5, ticket-summary 0.5, others 0.25. Override with e.g. `AI_DAILY_COST_CAPS=ask=5,imagine=3`.
+**Daily cost caps.** Every AI call is priced (Gemini list prices in `utils/ai.py`; unknown models are priced high so caps stay safe) and counted per feature per day (saved in SQLite, so restarts don't reset it). When a feature reaches its cap it behaves as if the AI were unavailable (the usual friendly message) until midnight in `TIMEZONE`. Defaults (USD/day, whole bot): ask 2, imagine 2, summarize 1, automod-image 1, mention 1, automod 0.5, news 0.5, trivia 0.5, ticket-summary 0.5, others 0.25. Override with e.g. `AI_DAILY_COST_CAPS=ask=5,imagine=3`.
 
-`XAI_SMART_REASONING` (default `low`) sets grok-4.7's reasoning effort for chat; empty = the model default (`high`, slower and pricier). If a model rejects it, the bot retries once without it.
+The bot talks to Gemini through its OpenAI-compatible endpoint (`GEMINI_API_BASE`, default `https://generativelanguage.googleapis.com/v1beta/openai/`). Gemini bills "thinking" tokens as output tokens; they are included in the cost tracking.
+
+**Rollback to xAI.** If `GEMINI_API_KEY` is empty, the old xAI settings are used instead (`XAI_API_KEY`, `XAI_MODEL`, `XAI_FAST_MODEL`, `XAI_SMART_MODEL`, `XAI_SMART_REASONING`, `XAI_VISION_MODEL`, `XAI_IMAGE_MODEL`). When `GEMINI_API_KEY` is set, xAI is never called.
 
 ### /ask (chat that remembers)
 ```
@@ -328,7 +330,7 @@ At startup the bot logs the model names your key can use, and warns if a configu
 ```
 /imagine prompt:a fox knight style:pixel art aspect_ratio:16:9
 ```
-- **Styles:** none, anime, pixel art, cinematic, logo, poster, 3d. **Aspect ratio:** auto (model picks), 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3 (values `grok-imagine-image` supports).
+- **Styles:** none, anime, pixel art, cinematic, logo, poster, 3d. **Aspect ratio:** auto (model picks), 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2 (sent to Gemini as an image size, e.g. 16:9 → 1792x1024; if the model rejects a size, the bot retries once and lets the model pick).
 - **Enhance** (on by default): after the safety checks, short prompts (≤ 20 words) are rewritten into a detailed prompt in the chosen style. The rewrite is shown under the image; if it fails or trips the NSFW filter, your own prompt is used.
 - **🔁 Variation** makes another image from the same prompt; **🎛️ Remix** opens a box to edit the prompt (which goes through every check again). Both count against the clicker's own limits.
 - Works only in #ai-art and #bot-commands.
@@ -357,7 +359,7 @@ With a key, new members get a short personalized greeting line (on the fast mode
 - The bot needs **Manage Messages** to delete messages and **Moderate Members** for the timeout button.
 
 ### Anti-spam (admin, no AI)
-Rule-based and free (no xAI calls). **On by default.** Deletes spam and escalates per member (strikes expire after 10 minutes):
+Rule-based and free (no AI calls). **On by default.** Deletes spam and escalates per member (strikes expire after 10 minutes):
 1st hit = message deleted + a short warning that deletes itself · 2nd = 10 min timeout · 3rd+ = 1 hour timeout (their messages from the last 2 minutes are bulk-deleted). Every action is logged to the mod-log channel.
 
 Catches: floods (5 messages in 5s), copy-paste (same message 3x in 30s, any channel), 5+ user/role mentions, any @everyone/@here, invites to other servers, scam/phishing links (free Nitro/Steam gift/airdrop + link, fake Discord/Steam domains), link-only posts from members who joined in the last 24h, caps walls (75% of 20+ letters), emoji walls (15+) and zalgo text.
@@ -391,7 +393,7 @@ A channel that posts new AI articles as they come out.
 - **How it works:** every 20 minutes the bot checks every feed. Each article is saved by its URL, so it's posted **once** per server, even if a feed lists it again or adds tracking codes to the link. Each post shows the title, source, a 1–2 sentence summary, a link and the article's image when there is one.
 - **No flood:** articles more than 24 hours old are never posted, so turning it on (or the first run) doesn't dump the backlog.
 - **Limits:** at most **1 post per 30 minutes** and **12 per day** (midnight to midnight in `TIMEZONE`). Extra articles wait in a queue and the best go first. No normal posts during **quiet hours, 1–7 AM** Eastern.
-- **With `XAI_API_KEY`:** the AI writes the summary and scores each article's importance from 1 to 10 (shown in the footer); the queue is ordered by that score. A **9 or 10** is **🚨 BREAKING**: a red embed that posts right away, even in quiet hours, and pings the role named **AI News** (or the role set with `/setup-link key:NEWS_ROLE_ID`). Breaking news is capped at 3 a day as a safety net. Make the role mentionable so the ping notifies, and add it to your ping self-roles if members should opt in. The AI only looks at new articles from the last 24 hours, at most 20 per check; its calls show as `news` in `/ai-usage`.
+- **With `GEMINI_API_KEY`:** the AI writes the summary and scores each article's importance from 1 to 10 (shown in the footer); the queue is ordered by that score. A **9 or 10** is **🚨 BREAKING**: a red embed that posts right away, even in quiet hours, and pings the role named **AI News** (or the role set with `/setup-link key:NEWS_ROLE_ID`). Breaking news is capped at 3 a day as a safety net. Make the role mentionable so the ping notifies, and add it to your ping self-roles if members should opt in. The AI only looks at new articles from the last 24 hours, at most 20 per check; its calls show as `news` in `/ai-usage`.
 - **Without a key:** the feeds' own descriptions are used as summaries, newest first, and nothing is marked breaking.
 - **Problems** go to the mod log: a feed that fails 3 checks in a row (it's skipped until it works again), or a post the bot couldn't make (missing permissions). A bad feed never stops the others. The bot needs **Send Messages** and **Embed Links** in the news channel.
 - **Tuning (optional env vars):** `NEWS_POLL_MINUTES` (20), `NEWS_MIN_GAP_MINUTES` (30), `NEWS_DAILY_LIMIT` (12), `NEWS_BREAKING_SCORE` (9), `NEWS_BREAKING_DAILY_LIMIT` (3), `NEWS_QUIET_START` / `NEWS_QUIET_END` (1 / 7).

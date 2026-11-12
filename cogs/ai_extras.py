@@ -1,6 +1,6 @@
 """More AI features: /summarize and /trivia (+ /trivia-leaderboard).
 
-Everything needs XAI_API_KEY; without it each command replies with the friendly "AI is off" message.
+Everything needs GEMINI_API_KEY; without it each command replies with the friendly "AI is off" message.
 Cost controls: per-user cooldowns and daily limits (counted in ai_usage) plus the per-feature daily
 cost caps in utils/ai.py.
 """

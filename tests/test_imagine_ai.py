@@ -25,11 +25,14 @@ from utils.db import Database  # noqa: E402
 
 
 async def _payloads():
-    """Only documented grok-imagine-image parameters are sent (model, prompt, n, response_format, aspect_ratio)."""
+    """Gemini: only OpenAI-compatible image parameters are sent; aspect ratio is mapped to `size`;
+    a size the model rejects is retried once without it. Legacy xAI still gets aspect_ratio."""
     sent = []
+    statuses = []
 
     class Resp:
-        status = 200
+        def __init__(self, status):
+            self.status = status
 
         async def __aenter__(self):
             return self
@@ -40,25 +43,43 @@ async def _payloads():
         async def json(self):
             return {"data": [{"b64_json": "iVBORw=="}]}
 
+        async def text(self):
+            return "bad size"
+
     class Session:
         closed = False
 
-        def post(self, url, json=None, **kw):
-            sent.append((url, json))
-            return Resp()
+        def post(self, url, json=None, headers=None, **kw):
+            sent.append((url, dict(json), headers))
+            return Resp(statuses.pop(0) if statuses else 200)
 
     async def get_session():
         return Session()
 
-    with patched(ai, _get_session=get_session, XAI_API_KEY="k"):
+    with patched(ai, _get_session=get_session, GEMINI_API_KEY="k", XAI_API_KEY="x"):
         assert await ai.image("a cat", "16:9")
         assert await ai.image("a cat", "auto")
         assert await ai.image("a cat", "7:3")  # not a supported ratio: omitted
-    assert sent[0][0].endswith("/images/generations")
+        assert await ai.image("a cat", "9:16")
+        statuses.append(400)  # size rejected -> retry without size
+        assert await ai.image("a cat", "4:3") == b"\x89PNG"
+    assert sent[0][0].startswith(ai.GEMINI_API_BASE) and sent[0][0].endswith("/images/generations")
+    assert sent[0][2]["Authorization"] == "Bearer k"
+    assert sent[0][1] == {"model": ai.GEMINI_IMAGE_MODEL, "prompt": "a cat", "n": 1, "response_format": "b64_json",
+                          "size": "1792x1024"}
+    assert "size" not in sent[1][1] and "size" not in sent[2][1]
+    assert sent[3][1]["size"] == "1024x1792"
+    assert sent[4][1]["size"] == "1024x768" and "size" not in sent[5][1]
+    for _, payload, _ in sent:
+        assert set(payload) <= {"model", "prompt", "n", "response_format", "size"}
+    assert set(ai.GEMINI_SIZES) == set(ai.ASPECT_RATIOS) - {"auto"}
+
+    sent.clear()
+    with patched(ai, _get_session=get_session, GEMINI_API_KEY="", XAI_API_KEY="x"):  # rollback path
+        assert await ai.image("a cat", "16:9")
+    assert sent[0][0].startswith(ai.API_BASE)
     assert sent[0][1] == {"model": ai.XAI_IMAGE_MODEL, "prompt": "a cat", "n": 1, "response_format": "b64_json",
                           "aspect_ratio": "16:9"}
-    assert "aspect_ratio" not in sent[1][1] and "aspect_ratio" not in sent[2][1]
-    assert set(sent[0][1]) <= {"model", "prompt", "n", "response_format", "aspect_ratio"}
 
 
 async def _run():
@@ -86,7 +107,7 @@ async def _run():
 
     try:
         await _payloads()
-        with patched(ai, classify=classify, enhance_prompt=enhance, image=image, XAI_API_KEY="k"):
+        with patched(ai, classify=classify, enhance_prompt=enhance, image=image, GEMINI_API_KEY="k"):
             g = Guild()
             art = g.add("ai-art")
             user = Member(g, name="Artist")
