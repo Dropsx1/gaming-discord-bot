@@ -66,7 +66,7 @@ XAI_VISION_MODEL = os.getenv("XAI_VISION_MODEL", "").strip() or XAI_SMART_MODEL
 XAI_SMART_REASONING = os.getenv("XAI_SMART_REASONING", "low").strip().lower()
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 SMART_TIMEOUT = aiohttp.ClientTimeout(total=60)
-IMAGE_TIMEOUT = aiohttp.ClientTimeout(total=60)
+IMAGE_TIMEOUT = aiohttp.ClientTimeout(total=90)  # Gemini 3 Pro Image is slower than text models
 MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "").strip() or os.getenv("XAI_MAX_TOKENS", "").strip() or 300)
 CHAT_MAX_TOKENS = 400  # /ask replies
 
@@ -672,25 +672,61 @@ async def enhance_prompt(prompt: str, style_hint: str = "") -> Optional[Reply]:
     return Reply(reply.text[:900], reply.tokens)
 
 
-# Aspect ratios offered by /imagine. "auto" = model picks. xAI takes these as aspect_ratio; Gemini's
-# OpenAI-compatible endpoint may ignore aspect_ratio, so they are mapped to a pixel `size` instead.
+# Aspect ratios offered by /imagine. "auto" = model picks.
+# Gemini's image models (Nano Banana / Pro) only support generateContent, not the OpenAI-compatible
+# /images/generations "predict" endpoint — that path 404s for gemini-3-pro-image. Aspect ratio is
+# sent as generationConfig.imageConfig.aspectRatio. Ratios Gemini does not document (2:1, 1:2)
+# are omitted so the model picks; if a ratio is rejected, we retry once without it.
+# xAI still uses /images/generations with aspect_ratio.
 ASPECT_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "auto")
-GEMINI_SIZES = {
-    "1:1": "1024x1024", "16:9": "1792x1024", "9:16": "1024x1792", "4:3": "1024x768", "3:4": "768x1024",
-    "3:2": "1536x1024", "2:3": "1024x1536", "2:1": "2048x1024", "1:2": "1024x2048",
-}
+GEMINI_ASPECT_RATIOS = ("1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
 
 
-async def _post_image(payload: dict) -> tuple[int, object, object]:
+def _gemini_native_base() -> str:
+    """Gemini REST root (v1beta), derived from GEMINI_API_BASE by dropping a trailing /openai."""
+    base = GEMINI_API_BASE
+    if base.endswith("/openai"):
+        base = base[: -len("/openai")]
+    return base.rstrip("/")
+
+
+def _gemini_native_headers() -> dict:
+    # Header auth so the key is never put in a URL (URLs can end up in logs).
+    return {"x-goog-api-key": _api_key(), "Content-Type": "application/json"}
+
+
+async def _post_image(url: str, payload: dict, headers: dict) -> tuple[int, object, object]:
     """POST one image request. Returns (status, json-or-error-text, session)."""
     async with _limit:
         session = await _get_session()
-        async with session.post(
-            f"{_api_base()}/images/generations", json=payload, headers=_headers(), timeout=IMAGE_TIMEOUT
-        ) as resp:
+        async with session.post(url, json=payload, headers=headers, timeout=IMAGE_TIMEOUT) as resp:
             if resp.status != 200:
                 return resp.status, (await resp.text())[:300], session
             return 200, await resp.json(), session
+
+
+def _gemini_image_payload(prompt: str, aspect_ratio: Optional[str]) -> dict:
+    config: dict = {"responseModalities": ["TEXT", "IMAGE"]}
+    if aspect_ratio and aspect_ratio in GEMINI_ASPECT_RATIOS:
+        config["imageConfig"] = {"aspectRatio": aspect_ratio}
+    return {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": config,
+    }
+
+
+def _extract_gemini_image(data: object) -> Optional[bytes]:
+    if not isinstance(data, dict):
+        return None
+    parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")) or []
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        inline = p.get("inlineData") or p.get("inline_data") or {}
+        b64 = inline.get("data") if isinstance(inline, dict) else None
+        if b64:
+            return base64.b64decode(b64)
+    return None
 
 
 async def image(prompt: str, aspect_ratio: Optional[str] = None) -> Optional[bytes]:
@@ -699,19 +735,34 @@ async def image(prompt: str, aspect_ratio: Optional[str] = None) -> Optional[byt
         return None
     model = image_model()
     name = provider()
-    payload = {"model": model, "prompt": prompt, "n": 1, "response_format": "b64_json"}
-    if aspect_ratio and aspect_ratio in ASPECT_RATIOS and aspect_ratio != "auto":
-        if using_gemini():
-            payload["size"] = GEMINI_SIZES[aspect_ratio]
-        else:
-            payload["aspect_ratio"] = aspect_ratio
     try:
-        status, data, session = await _post_image(payload)
-        if status != 200 and "size" in payload and status in (400, 422):
-            # The model may not support that size: retry once letting it pick.
-            log.info("%s rejected size %s for %s (%s); retrying without it", name, payload["size"], model, str(data)[:120])
-            payload.pop("size")
-            status, data, session = await _post_image(payload)
+        if using_gemini():
+            payload = _gemini_image_payload(prompt, aspect_ratio)
+            url = f"{_gemini_native_base()}/models/{model}:generateContent"
+            status, data, _session = await _post_image(url, payload, _gemini_native_headers())
+            if (status != 200 and status in (400, 422)
+                    and "imageConfig" in (payload.get("generationConfig") or {})):
+                ratio = payload["generationConfig"]["imageConfig"].get("aspectRatio")
+                log.info("%s rejected aspect ratio %s for %s (%s); retrying without it",
+                         name, ratio, model, str(data)[:120])
+                retry = _gemini_image_payload(prompt, None)
+                status, data, _session = await _post_image(url, retry, _gemini_native_headers())
+            if status != 200:
+                log.warning("%s image request failed: HTTP %s %s", name, status, data)
+                return None
+            raw = _extract_gemini_image(data)
+            if raw:
+                await spend.add("imagine", image_cost(model))
+                return raw
+            log.warning("%s image response had no image data", name)
+            return None
+
+        payload = {"model": model, "prompt": prompt, "n": 1, "response_format": "b64_json"}
+        if aspect_ratio and aspect_ratio in ASPECT_RATIOS and aspect_ratio != "auto":
+            payload["aspect_ratio"] = aspect_ratio
+        status, data, session = await _post_image(
+            f"{_api_base()}/images/generations", payload, _headers()
+        )
         if status != 200:
             log.warning("%s image request failed: HTTP %s %s", name, status, data)
             return None
