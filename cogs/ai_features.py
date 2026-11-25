@@ -555,7 +555,7 @@ class AIFeatures(commands.Cog):
             guild, channel, author = ctx_or_guild.guild, ctx_or_guild.channel, ctx_or_guild.author
         else:
             guild = ctx_or_guild
-        if not ai.key_set():
+        if not ai.image_key_set():
             return AI_OFF
         allowed = imagine_channels(guild)
         if not _in(channel, allowed):

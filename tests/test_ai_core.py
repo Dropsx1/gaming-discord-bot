@@ -36,8 +36,20 @@ def test_models_and_prices():
             assert ai.model_for(feature) == ai.GEMINI_FAST_MODEL, feature
         assert ai.model_for("automod-image") == ai.GEMINI_VISION_MODEL
         assert ai.model_for("imagine") == ai.GEMINI_IMAGE_MODEL
-        assert ai.enabled() and ai.key_set()  # /idea works with just the key (default model)
+        assert ai.using_gemini_images() and ai.image_provider() == "Gemini"
+        assert ai.enabled() and ai.key_set() and ai.image_key_set()  # /idea works with just the key (default model)
         assert ai._headers()["Authorization"] == "Bearer k"
+    with patched(ai, GEMINI_API_KEY="k", XAI_API_KEY="x", IMAGE_PROVIDER="xai"):  # split: chat Gemini, images xAI
+        assert ai.using_gemini() and ai.provider() == "Gemini"
+        assert not ai.using_gemini_images() and ai.image_provider() == "xAI"
+        assert ai.model_for("ask") == ai.GEMINI_SMART_MODEL and ai.model_for("imagine") == ai.XAI_IMAGE_MODEL
+        assert ai.XAI_IMAGE_MODEL == (os.getenv("XAI_IMAGE_MODEL") or "grok-imagine-image")
+        assert ai.key_set() and ai.image_key_set()
+        assert ai._image_headers()["Authorization"] == "Bearer x"
+        assert ai._headers()["Authorization"] == "Bearer k"
+    with patched(ai, GEMINI_API_KEY="k", XAI_API_KEY="", IMAGE_PROVIDER="xai"):
+        assert ai.key_set() and not ai.image_key_set()  # /imagine off without the xAI key
+        assert ai.model_for("imagine") == ai.XAI_IMAGE_MODEL
     with patched(ai, GEMINI_API_KEY="", XAI_API_KEY="x", XAI_MODEL=""):  # legacy xAI rollback path
         assert not ai.using_gemini() and ai.provider() == "xAI" and ai._api_base() == ai.API_BASE
         assert ai.model_for("ask") == ai.XAI_SMART_MODEL and ai.model_for("imagine") == ai.XAI_IMAGE_MODEL
@@ -221,10 +233,63 @@ def test_check_setup_gemini_logs():
     assert not any(secret in r for r in records)
 
 
+def test_check_setup_image_provider_xai_logs():
+    """When IMAGE_PROVIDER=xai, check_setup keeps chat on Gemini and notes images via xAI. Never logs keys."""
+    import logging
+
+    class Resp:
+        def __init__(self, status, data=None):
+            self.status, self.data = status, data
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return self.data
+
+    class Session:
+        closed = False
+
+        def get(self, url, headers=None, **kw):
+            ids = [{"id": f"models/{m}"} for m in (ai.GEMINI_FAST_MODEL, ai.GEMINI_SMART_MODEL, ai.GEMINI_IMAGE_MODEL)]
+            return Resp(200, {"data": ids})
+
+    async def get_session():
+        return Session()
+
+    records = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = Grab()
+    ai.log.addHandler(handler)
+    old_level = ai.log.level
+    ai.log.setLevel(logging.INFO)
+    gemini_secret, xai_secret = "sk-gemini-SECRET", "xai-SECRET-999"
+    try:
+        with patched(ai, _get_session=get_session, GEMINI_API_KEY=gemini_secret,
+                     XAI_API_KEY=xai_secret, IMAGE_PROVIDER="xai"):
+            asyncio.run(ai.check_setup())
+    finally:
+        ai.log.removeHandler(handler)
+        ai.log.setLevel(old_level)
+    enabled = [r for r in records if r.startswith("AI enabled with model")]
+    assert enabled and "Gemini" in enabled[0]
+    assert f"{ai.XAI_IMAGE_MODEL} via xAI" in enabled[0]
+    assert not any("is not in your key's model list" in r for r in records)
+    assert not any(gemini_secret in r or xai_secret in r for r in records)
+
+
 if __name__ == "__main__":
     test_models_and_prices()
     test_caps_parsing()
     test_parse_json_and_trivia()
     test_complete()
     test_check_setup_gemini_logs()
+    test_check_setup_image_provider_xai_logs()
     print("tests/test_ai_core.py: all checks passed")

@@ -285,15 +285,17 @@ Everything AI is optional. Set `GEMINI_API_KEY` (from <https://aistudio.google.c
 | `/ask`, @mention chat, `/summarize`, ticket summaries, news recaps | `GEMINI_API_KEY` | `GEMINI_SMART_MODEL` (default `gemini-3.8-flash`) |
 | AI auto-moderation (text), `/imagine` safety check + prompt enhancement, news scoring, `/trivia`, welcome lines | `GEMINI_API_KEY` | `GEMINI_FAST_MODEL` (default `gemini-3.5-flash-lite`) |
 | AI auto-moderation (images) | `GEMINI_API_KEY` + `/automod images on` | `GEMINI_VISION_MODEL` (default: `GEMINI_SMART_MODEL`; Gemini models take image input) |
-| `/imagine` | `GEMINI_API_KEY` | `GEMINI_IMAGE_MODEL` (default `gemini-3-pro-image`, Nano Banana Pro) |
+| `/imagine` | `GEMINI_API_KEY` (or `XAI_API_KEY` when `IMAGE_PROVIDER=xai`) | `GEMINI_IMAGE_MODEL` (default `gemini-3-pro-image`) when images use Gemini; `XAI_IMAGE_MODEL` (default `grok-imagine-image`) when `IMAGE_PROVIDER=xai` |
 
 At startup the bot logs the model names your key can use, and warns if a configured model isn't one of them.
 
 **Daily cost caps.** Every AI call is priced (Gemini list prices in `utils/ai.py`; unknown models are priced high so caps stay safe) and counted per feature per day (saved in SQLite, so restarts don't reset it). When a feature reaches its cap it behaves as if the AI were unavailable (the usual friendly message) until midnight in `TIMEZONE`. Defaults (USD/day, whole bot): ask 2, imagine 2, summarize 1, automod-image 1, mention 1, automod 0.5, news 0.5, trivia 0.5, ticket-summary 0.5, others 0.25. Override with e.g. `AI_DAILY_COST_CAPS=ask=5,imagine=3`.
 
-The bot talks to Gemini through its OpenAI-compatible endpoint for text (`GEMINI_API_BASE`, default `https://generativelanguage.googleapis.com/v1beta/openai/`). `/imagine` uses Gemini's native `generateContent` API (same host, without `/openai`), because the image models are not supported on the OpenAI-compatible `/images/generations` path. Gemini bills "thinking" tokens as output tokens; they are included in the cost tracking.
+The bot talks to Gemini through its OpenAI-compatible endpoint for text (`GEMINI_API_BASE`, default `https://generativelanguage.googleapis.com/v1beta/openai/`). When `/imagine` uses Gemini, it calls the native `generateContent` API (same host, without `/openai`), because those image models are not supported on the OpenAI-compatible `/images/generations` path. Gemini bills "thinking" tokens as output tokens; they are included in the cost tracking.
 
-**Rollback to xAI.** If `GEMINI_API_KEY` is empty, the old xAI settings are used instead (`XAI_API_KEY`, `XAI_MODEL`, `XAI_FAST_MODEL`, `XAI_SMART_MODEL`, `XAI_SMART_REASONING`, `XAI_VISION_MODEL`, `XAI_IMAGE_MODEL`). When `GEMINI_API_KEY` is set, xAI is never called.
+**Image provider.** Set `IMAGE_PROVIDER=xai` to keep chat, automod and prompt enhancement on Gemini while `/imagine` uses xAI's OpenAI-compatible `https://api.x.ai/v1/images/generations` API (`XAI_API_KEY`, model `XAI_IMAGE_MODEL`, default `grok-imagine-image`). Set `IMAGE_PROVIDER=gemini` (or leave it empty while a Gemini key is set) to put `/imagine` back on Gemini. Limits, cooldowns and daily caps are unchanged.
+
+**Rollback to xAI for text too.** If `GEMINI_API_KEY` is empty, the old xAI settings are used for chat as well (`XAI_API_KEY`, `XAI_MODEL`, `XAI_FAST_MODEL`, `XAI_SMART_MODEL`, `XAI_SMART_REASONING`, `XAI_VISION_MODEL`, `XAI_IMAGE_MODEL`).
 
 ### /ask (chat that remembers)
 ```
@@ -330,7 +332,7 @@ The bot talks to Gemini through its OpenAI-compatible endpoint for text (`GEMINI
 ```
 /imagine prompt:a fox knight style:pixel art aspect_ratio:16:9
 ```
-- **Styles:** none, anime, pixel art, cinematic, logo, poster, 3d. **Aspect ratio:** auto (model picks), 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2 (sent to Gemini as `imageConfig.aspectRatio` on the native `generateContent` API; ratios Gemini doesn't support, and any ratio the model rejects, are retried once letting the model pick).
+- **Styles:** none, anime, pixel art, cinematic, logo, poster, 3d. **Aspect ratio:** auto (model picks), 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2. On Gemini these are sent as `imageConfig.aspectRatio` on the native `generateContent` API (unsupported or rejected ratios are retried once letting the model pick). On xAI they are sent as `aspect_ratio` to `/images/generations`.
 - **Enhance** (on by default): after the safety checks, short prompts (≤ 20 words) are rewritten into a detailed prompt in the chosen style. The rewrite is shown under the image; if it fails or trips the NSFW filter, your own prompt is used.
 - **🔁 Variation** makes another image from the same prompt; **🎛️ Remix** opens a box to edit the prompt (which goes through every check again). Both count against the clicker's own limits.
 - Works only in #ai-art and #bot-commands.

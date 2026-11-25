@@ -94,6 +94,17 @@ async def _payloads():
     assert sent[0][1] == {"model": ai.XAI_IMAGE_MODEL, "prompt": "a cat", "n": 1, "response_format": "b64_json",
                           "aspect_ratio": "16:9"}
 
+    sent.clear()
+    # Split providers: Gemini key still set (chat stays there), IMAGE_PROVIDER=xai for /imagine.
+    with patched(ai, _get_session=get_session, GEMINI_API_KEY="k", XAI_API_KEY="x", IMAGE_PROVIDER="xai"):
+        raw = await ai.image("a cat", "16:9")
+    assert raw == b"\x89PNG"
+    assert sent[0][0] == f"{ai.API_BASE}/images/generations"
+    assert sent[0][2]["Authorization"] == "Bearer x" and "x-goog-api-key" not in sent[0][2]
+    assert sent[0][1] == {"model": ai.XAI_IMAGE_MODEL, "prompt": "a cat", "n": 1, "response_format": "b64_json",
+                          "aspect_ratio": "16:9"}
+    assert all(":generateContent" not in u for u, _, _ in sent)
+
 
 async def _run():
     gc.config.GUILD_ID = 0
