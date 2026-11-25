@@ -1,4 +1,4 @@
-"""AI provider client: Google Gemini (default) with a legacy xAI (Grok) fallback.
+"""AI provider client: Google Gemini for text (default) with a selectable /imagine provider.
 
 Set in Railway (or .env):
     GEMINI_API_KEY   your key from https://aistudio.google.com/apikey
@@ -9,16 +9,19 @@ Optional (all have defaults that are confirmed on the production key):
     GEMINI_SMART_MODEL   chat model for /ask, @mention chat, /summarize, ticket summaries and the
                          news recaps (default gemini-3.8-flash)
     GEMINI_VISION_MODEL  image-understanding model for automod image checks (default: GEMINI_SMART_MODEL)
-    GEMINI_IMAGE_MODEL   /imagine model (default gemini-3-pro-image, "Nano Banana Pro")
+    GEMINI_IMAGE_MODEL   /imagine model when images use Gemini (default gemini-3-pro-image, "Nano Banana Pro")
     GEMINI_MODEL         /idea and /prompt model (default: GEMINI_FAST_MODEL)
     GEMINI_API_BASE      OpenAI-compatible endpoint (default
                          https://generativelanguage.googleapis.com/v1beta/openai/)
     GEMINI_MAX_TOKENS    max tokens for /idea and /prompt (default 300)
+    IMAGE_PROVIDER       "gemini" or "xai". When unset, /imagine follows the text provider.
+                         Set IMAGE_PROVIDER=xai to keep chat on Gemini and generate images with
+                         xAI (XAI_API_KEY, XAI_IMAGE_MODEL, default grok-imagine-image).
     AI_DAILY_COST_CAPS   per-feature daily spend caps in USD, e.g. "ask=2,summarize=1,imagine=1"
 
-Rollback: when GEMINI_API_KEY is NOT set, the old xAI settings are used instead (XAI_API_KEY,
-XAI_MODEL, XAI_FAST_MODEL, XAI_SMART_MODEL, XAI_VISION_MODEL, XAI_IMAGE_MODEL, XAI_SMART_REASONING,
-XAI_API_BASE). When GEMINI_API_KEY is set, xAI is never called.
+Rollback: when GEMINI_API_KEY is NOT set, the old xAI settings are used for text as well
+(XAI_API_KEY, XAI_MODEL, XAI_FAST_MODEL, XAI_SMART_MODEL, XAI_VISION_MODEL, XAI_IMAGE_MODEL,
+XAI_SMART_REASONING, XAI_API_BASE). IMAGE_PROVIDER lets /imagine use xAI independently.
 
 Per-feature model selection: FEATURE_MODELS maps a feature ("ask", "summarize",
 "automod", ...) to the smart, fast, vision or image model. Every call made
@@ -52,9 +55,11 @@ GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "").strip() or GEMINI_SMA
 GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "").strip() or "gemini-3-pro-image"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip() or GEMINI_FAST_MODEL  # /idea and /prompt
 
-# ---- Legacy xAI (Grok): only used when GEMINI_API_KEY is unset, so rollback is just swapping keys.
+# ---- Legacy xAI (Grok): text uses this when GEMINI_API_KEY is unset.
+# /imagine uses it when IMAGE_PROVIDER=xai (or when Gemini is off).
 API_BASE = os.getenv("XAI_API_BASE", "https://api.x.ai/v1").rstrip("/")
 XAI_API_KEY = os.getenv("XAI_API_KEY", "").strip()
+IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "").strip().lower()
 XAI_MODEL = os.getenv("XAI_MODEL", "").strip()
 # Cheap text model: XAI_FAST_MODEL, else the same model as /idea (XAI_MODEL), else a default.
 XAI_FAST_MODEL = os.getenv("XAI_FAST_MODEL", "").strip() or XAI_MODEL or "grok-4-1-fast-non-reasoning"
@@ -120,13 +125,31 @@ class Reply:
 
 
 def using_gemini() -> bool:
-    """Gemini is the provider whenever GEMINI_API_KEY is set (xAI is then never called)."""
+    """Gemini is the text/chat provider whenever GEMINI_API_KEY is set."""
     return bool(GEMINI_API_KEY)
 
 
+def using_gemini_images() -> bool:
+    """Images follow IMAGE_PROVIDER when set (gemini or xai); otherwise they follow the text provider.
+
+    IMAGE_PROVIDER=xai keeps /imagine on xAI even when chat stays on Gemini. An explicit
+    xai setting does not fall back to Gemini if XAI_API_KEY is missing.
+    """
+    if IMAGE_PROVIDER in ("xai", "grok"):
+        return False
+    if IMAGE_PROVIDER in ("gemini", "google"):
+        return bool(GEMINI_API_KEY)
+    return using_gemini()
+
+
 def provider() -> str:
-    """Human-readable provider name for logs and admin messages."""
+    """Human-readable text-provider name for logs and admin messages."""
     return "Gemini" if using_gemini() or not XAI_API_KEY else "xAI"
+
+
+def image_provider() -> str:
+    """Human-readable /imagine provider name for logs and admin messages."""
+    return "Gemini" if using_gemini_images() else "xAI"
 
 
 def _api_key() -> str:
@@ -135,6 +158,14 @@ def _api_key() -> str:
 
 def _api_base() -> str:
     return GEMINI_API_BASE if using_gemini() else API_BASE
+
+
+def _image_key() -> str:
+    return GEMINI_API_KEY if using_gemini_images() else XAI_API_KEY
+
+
+def _image_headers() -> dict:
+    return {"Authorization": f"Bearer {_image_key()}", "Content-Type": "application/json"}
 
 
 def text_model() -> str:
@@ -155,7 +186,7 @@ def vision_model() -> str:
 
 
 def image_model() -> str:
-    return GEMINI_IMAGE_MODEL if using_gemini() else XAI_IMAGE_MODEL
+    return GEMINI_IMAGE_MODEL if using_gemini_images() else XAI_IMAGE_MODEL
 
 
 def enabled() -> bool:
@@ -164,8 +195,13 @@ def enabled() -> bool:
 
 
 def key_set() -> bool:
-    """/ask, /imagine and AI moderation: only need the key."""
+    """/ask and AI moderation: only need the text-provider key."""
     return bool(_api_key())
+
+
+def image_key_set() -> bool:
+    """/imagine: needs the image-provider key (XAI_API_KEY when IMAGE_PROVIDER=xai)."""
+    return bool(_image_key())
 
 
 def _headers() -> dict:
@@ -731,12 +767,12 @@ def _extract_gemini_image(data: object) -> Optional[bytes]:
 
 async def image(prompt: str, aspect_ratio: Optional[str] = None) -> Optional[bytes]:
     """Generate one image; returns PNG/JPEG bytes, or None on any failure (or over the daily cap)."""
-    if not key_set() or over_cap("imagine"):
+    if not image_key_set() or over_cap("imagine"):
         return None
     model = image_model()
-    name = provider()
+    name = image_provider()
     try:
-        if using_gemini():
+        if using_gemini_images():
             payload = _gemini_image_payload(prompt, aspect_ratio)
             url = f"{_gemini_native_base()}/models/{model}:generateContent"
             status, data, _session = await _post_image(url, payload, _gemini_native_headers())
@@ -761,7 +797,7 @@ async def image(prompt: str, aspect_ratio: Optional[str] = None) -> Optional[byt
         if aspect_ratio and aspect_ratio in ASPECT_RATIOS and aspect_ratio != "auto":
             payload["aspect_ratio"] = aspect_ratio
         status, data, session = await _post_image(
-            f"{_api_base()}/images/generations", payload, _headers()
+            f"{API_BASE}/images/generations", payload, _image_headers()
         )
         if status != 200:
             log.warning("%s image request failed: HTTP %s %s", name, status, data)
@@ -796,6 +832,9 @@ async def check_setup() -> None:
     prefix = "GEMINI_" if gemini else "XAI_"
     if not gemini:
         log.warning("GEMINI_API_KEY is not set: using the legacy xAI provider (XAI_API_KEY)")
+    if not image_key_set():
+        log.warning("/imagine is off: IMAGE_PROVIDER=%s but %s is not set",
+                    IMAGE_PROVIDER or "default", "GEMINI_API_KEY" if using_gemini_images() else "XAI_API_KEY")
     try:
         session = await _get_session()
         async with session.get(f"{_api_base()}/models", headers=_headers()) as resp:
@@ -813,12 +852,19 @@ async def check_setup() -> None:
         return
 
     listed = ", ".join(models)
-    for label, model in (("FAST_MODEL", fast_model()), ("SMART_MODEL", smart_model()),
-                         ("VISION_MODEL", vision_model()), ("IMAGE_MODEL", image_model())):
+    same_image_provider = image_provider() == name
+    checks = [("FAST_MODEL", fast_model()), ("SMART_MODEL", smart_model()),
+              ("VISION_MODEL", vision_model())]
+    if same_image_provider:
+        checks.append(("IMAGE_MODEL", image_model()))
+    for label, model in checks:
         if models and model not in models:
             log.warning("%s%s=%r is not in your key's model list (fine if it is an alias). Listed: %s",
                         prefix, label, model, listed)
     model = text_model()
+    images_note = image_model()
+    if not same_image_provider and image_key_set():
+        images_note = f"{image_model()} via {image_provider()}"
     if not model:
         log.warning("/idea and /prompt use built-in lists: set %sMODEL to one of: %s", prefix, listed or "(none listed)")
     elif models and model not in models:
@@ -826,4 +872,4 @@ async def check_setup() -> None:
                     prefix, model, listed)
     else:
         log.info("AI enabled with model %s (%s; chat %s, fast %s, images %s)", model, name, smart_model(),
-                 fast_model(), image_model())
+                 fast_model(), images_note)
